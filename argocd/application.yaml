@@ -1,0 +1,21 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: docpipeline
+  namespace: argocd
+spec:
+  project: default
+  source:
+    # Deployed with `argocd app sync docpipeline --local ./k8s` (renders from
+    # the working tree, no push needed). repoURL is required but unused by
+    # --local — a real placeholder so automated: could be enabled later.
+    repoURL: https://github.com/wmaucla/document-llm-ops.git
+    targetRevision: main
+    path: k8s
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: default
+  # Manual-only (no automated: block) — a deploy is a decision.
+  syncPolicy:
+    syncOptions:
+      - CreateNamespace=false

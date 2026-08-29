@@ -1,0 +1,467 @@
+---
+# document-llm-ops — infra + deployment orchestration.
+# Run via `make <target>` (see Makefile) or directly:
+#   ansible-playbook site.yml --tags reset
+#   ansible-playbook site.yml --tags e2e
+# See AGENT.md for the "why" behind non-obvious task ordering and fixes below.
+- name: document-llm-ops
+  hosts: local
+  connection: local
+  gather_facts: false
+
+  vars:
+    repo_root: "{{ playbook_dir }}/.."
+    sibling_repo_root: "{{ repo_root }}/../mlops-llm-repo"
+    dotenv_cmd: "set -a && . ./.env && set +a &&"
+    docpipeline_apps: >-
+      app in (docpipeline-triage,docpipeline-pdf-worker,docpipeline-ocr-shard,
+      docpipeline-extraction,docpipeline-sink-stub,docpipeline-outbox-relay,
+      docpipeline-sweeper,docpipeline-orphan-detector)
+    pg_host: "{{ lookup('ansible.builtin.env', 'PGHOST') | default('localhost', true) }}"
+    pg_port: "{{ lookup('ansible.builtin.env', 'PGPORT') | default('55432', true) }}"
+    pg_database: "{{ lookup('ansible.builtin.env', 'PGDATABASE') | default('docpipeline', true) }}"
+    pg_user: "{{ lookup('ansible.builtin.env', 'PGUSER') | default('postgres', true) }}"
+    pg_password: "{{ lookup('ansible.builtin.env', 'PGPASSWORD') | default('postgres', true) }}"
+
+  environment:
+    PGHOST: "{{ pg_host }}"
+    PGPORT: "{{ pg_port }}"
+    PGDATABASE: "{{ pg_database }}"
+    PGUSER: "{{ pg_user }}"
+    PGPASSWORD: "{{ pg_password }}"
+
+  tasks:
+    # ══════════════════════════════════════════════════ up / down ══════
+    # Plain `docker compose` CLI, not the community.docker collection module
+    # — an older, incompatible community.docker version wins resolution on
+    # this box's collection search path.
+    - name: Start docker-compose infra (Postgres/Redpanda/fake-gcs-server/Redis)
+      ansible.builtin.command:
+        cmd: docker compose up -d
+        chdir: "{{ repo_root }}"
+      changed_when: true
+      tags: [up, reset, e2e, e2e-k8s]
+
+    - name: Wait for postgres + redpanda to report healthy
+      ansible.builtin.command:
+        cmd: "docker compose ps {{ item }} --format '{% raw %}{{.Health}}{% endraw %}'"
+        chdir: "{{ repo_root }}"
+      register: health_check
+      until: health_check.stdout == "healthy"
+      retries: 30
+      delay: 1
+      changed_when: false
+      loop: [postgres, redpanda]
+      tags: [up, reset, e2e, e2e-k8s]
+
+    - name: Stop docker-compose infra
+      ansible.builtin.command:
+        cmd: docker compose down
+        chdir: "{{ repo_root }}"
+      changed_when: true
+      tags: [down]
+
+    # ══════════════════════════════════════════════════ init-db ════════
+    - name: Apply migrations in order
+      ansible.builtin.command:
+        cmd: >
+          psql -v ON_ERROR_STOP=1
+          -h {{ pg_host }} -p {{ pg_port }} -U {{ pg_user }} -d {{ pg_database }}
+          -f {{ item }}
+      loop: "{{ query('ansible.builtin.fileglob', repo_root + '/migrations/*.sql') | sort }}"
+      changed_when: true
+      tags: [init-db, reset, e2e, e2e-k8s]
+
+    # ══════════════════════════════════════════════════ reset ══════════
+    # Truncate the ledger, clear GCS, recreate Redpanda, flush Redis. Must
+    # run before topics/fixtures below and after migrations — file order is
+    # execution order regardless of --tags (see AGENT.md).
+    - name: Truncate ledger tables and reset the auto-post flag
+      ansible.builtin.command:
+        cmd: >
+          psql -v ON_ERROR_STOP=1 -h {{ pg_host }} -p {{ pg_port }}
+          -U {{ pg_user }} -d {{ pg_database }} -c
+          "TRUNCATE documents, document_shards, outbox, attempt_log,
+          posted_documents, break_glass_audit RESTART IDENTITY CASCADE;
+          UPDATE feature_flags SET value = true WHERE key = 'auto_post_enabled';"
+      changed_when: true
+      tags: [reset]
+
+    - name: Clear GCS objects (inbox/, ocr/, shards/, shards_out/, experiments/)
+      ansible.builtin.shell:
+        cmd: >
+          {{ dotenv_cmd }} uv run python3 -c
+          "from docpipeline.infra import gcs;
+          gcs.ensure_bucket();
+          [gcs.delete_prefix(p) for p in ('inbox/','ocr/','shards/','shards_out/','experiments/')]"
+        chdir: "{{ repo_root }}"
+        executable: /bin/bash
+      changed_when: true
+      tags: [reset]
+
+    - name: Recreate Redpanda (new container = wiped topics/offsets/groups)
+      ansible.builtin.command: "{{ item }}"
+      loop:
+        - "docker compose kill redpanda"
+        - "docker compose rm -f redpanda"
+        - "docker compose up -d redpanda"
+      args:
+        chdir: "{{ repo_root }}"
+      changed_when: true
+      failed_when: false
+      tags: [reset]
+
+    - name: Wait for the recreated Redpanda to report healthy
+      ansible.builtin.command:
+        cmd: "docker compose ps redpanda --format '{% raw %}{{.Health}}{% endraw %}'"
+        chdir: "{{ repo_root }}"
+      register: rp_health
+      until: rp_health.stdout == "healthy"
+      retries: 30
+      delay: 1
+      changed_when: false
+      tags: [reset]
+
+    - name: Flush Redis
+      ansible.builtin.shell:
+        cmd: >
+          {{ dotenv_cmd }} uv run python3 -c
+          "import redis; from docpipeline import config;
+          redis.from_url(config.REDIS_URL).flushdb()"
+        chdir: "{{ repo_root }}"
+        executable: /bin/bash
+      changed_when: true
+      tags: [reset]
+
+    - name: Clear local mock-OCR registry, fixture manifest, and per-service logs
+      ansible.builtin.shell:
+        cmd: "rm -f fixtures/generated/mock_ocr_registry.json fixtures/generated/manifest.json logs/*.log"
+        chdir: "{{ repo_root }}"
+        executable: /bin/bash
+      changed_when: true
+      tags: [reset]
+
+    # ══════════════════════════════════════════════════ topics ═════════
+    # One shared, idempotent task — runs standalone on a fresh broker
+    # (`--tags topics`) or right after reset's redpanda recreation
+    # (`--tags reset`), always after any redpanda (re)start.
+    - name: Create every Kafka topic
+      ansible.builtin.shell:
+        cmd: "{{ dotenv_cmd }} uv run python3 scripts/create_topics.py"
+        chdir: "{{ repo_root }}"
+        executable: /bin/bash
+      changed_when: true
+      tags: [topics, reset, e2e, e2e-k8s]
+
+    # ══════════════════════════════════════════════════ fixtures ═══════
+    - name: Generate + upload the 14 design-doc fixtures
+      ansible.builtin.shell:
+        cmd: "{{ dotenv_cmd }} uv run python3 fixtures/generate_fixtures.py"
+        chdir: "{{ repo_root }}"
+        executable: /bin/bash
+      changed_when: true
+      tags: [fixtures, e2e]
+
+    # e2e-k8s gets a small subset, not all 14 — the real LLM path funnels
+    # through one Ollama pod regardless of extraction replica count, so
+    # draining 14 real-mode documents would take 10+ minutes on its own.
+    # 3 covers tier-0 (digital_clean), OCR-fallback (digital_garbage_text_
+    # layer), and single-shard OCR (one_page_scan) — the full 14 already
+    # get proven correct, fast and free, by make e2e's mock-mode host loop.
+    - name: Generate + upload a small fixture subset for the real-LLM K8s path
+      ansible.builtin.shell:
+        cmd: "{{ dotenv_cmd }} FIXTURE_LIMIT=3 uv run python3 fixtures/generate_fixtures.py"
+        chdir: "{{ repo_root }}"
+        executable: /bin/bash
+      changed_when: true
+      tags: [e2e-k8s]
+
+    # ══════════════════════════════════════════════════ cluster-rebuild ═
+    # DESTRUCTIVE: deletes whatever minikube cluster currently exists,
+    # sibling-repo stack included, every e2e-k8s run — a genuinely
+    # clean-room cluster is worth the ~10-15 min cost (see AGENT.md's
+    # "stale Kafka clients" and "cluster rebuild" notes for why). Runs the
+    # sibling mlops-llm-repo's own `terraform apply` rather than
+    # reimplementing its ArgoCD/Ollama/LiteLLM/Langfuse bring-up here.
+    - name: Delete any existing minikube cluster
+      ansible.builtin.command:
+        cmd: minikube delete
+      changed_when: true
+      failed_when: false
+      tags: [cluster-rebuild, e2e-k8s]
+
+    # --gpus=all requires the NVIDIA Container Toolkit on the host (docker driver +
+    # docker container-runtime only) — passes the host GPU through so the sibling
+    # repo's ollama.yaml can request nvidia.com/gpu and run real inference in
+    # seconds instead of minutes. Confirmed live: CPU-only inference for these
+    # ~1-1.5B models was highly host-load-dependent (150s-7.5min/call under
+    # contention) — this is the actual fix for that, not more SLO tuning.
+    - name: Start a fresh minikube cluster (sized for both stacks sharing it, GPU passthrough enabled)
+      ansible.builtin.command:
+        cmd: minikube start --cpus=6 --memory=20480 --gpus=all
+      changed_when: true
+      tags: [cluster-rebuild, e2e-k8s]
+
+    # Stale local tfstate survives `minikube delete` and would make terraform
+    # skip re-applying against the fresh cluster.
+    - name: Clear the sibling repo's stale terraform state
+      ansible.builtin.file:
+        path: "{{ sibling_repo_root }}/tf/{{ item }}"
+        state: absent
+      loop:
+        - .terraform
+        - terraform.tfstate
+        - terraform.tfstate.backup
+      tags: [cluster-rebuild, e2e-k8s]
+
+    # Ansible's chdir (not terraform's own -chdir flag) is required: asdf's
+    # terraform shim resolves its version from the nearest .tool-versions
+    # relative to the OS working directory, which -chdir never changes.
+    # Without this, it resolves ~/.tool-versions instead of the sibling
+    # repo's own pinned version and fails on its version constraint.
+    - name: Re-provision the sibling repo's entire stack (ArgoCD, Argo Workflows, Ollama, LiteLLM, Langfuse) via its own terraform
+      ansible.builtin.command:
+        cmd: "{{ item }}"
+        chdir: "{{ sibling_repo_root }}/tf"
+      loop:
+        - "terraform init"
+        - "terraform apply -auto-approve"
+      changed_when: true
+      tags: [cluster-rebuild, e2e-k8s]
+
+    # ══════════════════════════════════════════════════ image ══════════
+    - name: Build the docpipeline image into minikube's docker daemon
+      ansible.builtin.shell:
+        cmd: |
+          eval $(minikube docker-env)
+          docker build -t docpipeline:latest .
+        chdir: "{{ repo_root }}"
+        executable: /bin/bash
+      changed_when: true
+      tags: [image, e2e-k8s]
+
+    # ══════════════════════════════════════════════════ deploy (ArgoCD) ═
+    # GitOps end to end. The two Application applies below are the only raw
+    # kubectl/k8s-API calls in this play — irreducible, since ArgoCD can't
+    # sync the object that tells it what to sync.
+    - name: Apply the docpipeline ArgoCD Application
+      kubernetes.core.k8s:
+        state: present
+        src: "{{ repo_root }}/argocd/application.yaml"
+      tags: [deploy, e2e-k8s]
+
+    - name: Apply the KEDA ArgoCD Application
+      kubernetes.core.k8s:
+        state: present
+        src: "{{ repo_root }}/argocd/keda-application.yaml"
+      tags: [keda-install, e2e-k8s]
+
+    # `--core` talks to the Kubernetes API directly (no argocd-server
+    # login/port-forward at all) — confirmed live as the fix for a
+    # port-forward that reliably died after its first connection when
+    # backgrounded from an Ansible shell task, no matter how it was
+    # detached (nohup, setsid, retries). It resolves argocd-cm from the
+    # *current kubectl context's namespace*, hence the explicit switch
+    # and reset around it — nothing else in this play may assume "argocd"
+    # is the ambient default namespace.
+    - name: Point the kubectl context at the argocd namespace for --core mode
+      ansible.builtin.command:
+        cmd: kubectl config set-context --current --namespace=argocd
+      changed_when: false
+      tags: [keda-install, deploy, e2e-k8s]
+
+    - name: Sync the KEDA Application from its upstream Helm chart
+      ansible.builtin.command:
+        cmd: "argocd app sync keda --core"
+      changed_when: true
+      tags: [keda-install, e2e-k8s]
+
+    - name: Wait for the KEDA operator to become available
+      ansible.builtin.command:
+        cmd: "kubectl wait --for=condition=available deployment -l app.kubernetes.io/name=keda-operator -n keda --timeout=90s"
+      changed_when: false
+      tags: [keda-install, e2e-k8s]
+
+    - name: Sync the docpipeline Application from the local k8s/ tree
+      ansible.builtin.command:
+        cmd: "argocd app sync docpipeline --core --local {{ repo_root }}/k8s"
+      changed_when: true
+      tags: [deploy, e2e-k8s]
+
+    - name: Reset the kubectl context back to the default namespace
+      ansible.builtin.command:
+        cmd: kubectl config set-context --current --namespace=default
+      changed_when: false
+      tags: [keda-install, deploy, e2e-k8s]
+
+    - name: Wait for every docpipeline Deployment to become available
+      ansible.builtin.command:
+        cmd: "kubectl wait --for=condition=available deployment -l '{{ docpipeline_apps }}' -n default --timeout=90s"
+      changed_when: false
+      tags: [deploy, e2e-k8s]
+
+    # reset recreates Redpanda (new cluster ID); pods from a prior deploy
+    # keep their old Kafka client and `argocd app sync` won't restart an
+    # unchanged Deployment. Force a reconnect rather than wait out
+    # librdkafka's own recovery (observed ~14 min — see AGENT.md).
+    - name: Roll every docpipeline Deployment so Kafka clients reconnect to the (possibly just-recreated) Redpanda cluster
+      ansible.builtin.command:
+        cmd: "kubectl rollout restart deployment -l '{{ docpipeline_apps }}' -n default"
+      changed_when: true
+      tags: [deploy, e2e-k8s]
+
+    - name: Wait for the rollout restart to finish
+      ansible.builtin.command:
+        cmd: "kubectl rollout status deployment/{{ item }} -n default --timeout=90s"
+      loop:
+        - docpipeline-triage
+        - docpipeline-pdf-worker
+        - docpipeline-ocr-shard
+        - docpipeline-extraction
+        - docpipeline-sink-stub
+        - docpipeline-outbox-relay
+        - docpipeline-sweeper
+        - docpipeline-orphan-detector
+      changed_when: false
+      tags: [deploy, e2e-k8s]
+
+    # `kubectl rollout status` only confirms pods are Ready, not that the
+    # Kafka consumer group's rebalance has settled. Confirmed live: a
+    # canary run immediately after this rollout restart got its message
+    # stranded mid-rebalance (3 replicas restarting within ~7s) — never
+    # consumed until the sweeper redrove it ~4 minutes later. Pausing here
+    # lets the group stabilize before anything depends on it consuming.
+    - name: Let the Kafka consumer group rebalance settle after the restart
+      ansible.builtin.pause:
+        seconds: 20
+      tags: [deploy, e2e-k8s]
+
+    # Cascade delete goes through ArgoCD, not raw kubectl — the Application
+    # owns every resource it synced from k8s/ (configmap, deployments,
+    # ScaledObjects in keda.yaml included), so this is the GitOps-native
+    # mirror of the "deploy" sync above, not a separate manual teardown list.
+    - name: Remove everything the deploy tag created (ArgoCD cascade delete)
+      ansible.builtin.shell:
+        cmd: |
+          kubectl config set-context --current --namespace=argocd
+          argocd app delete docpipeline --core --cascade --yes
+          kubectl config set-context --current --namespace=default
+        executable: /bin/bash
+      changed_when: true
+      failed_when: false
+      tags: [undeploy, never]
+
+    # ══════════════════════════════════════════════════ canary / dlq / deadman ═
+    # 900s SLO, not the CLI's 60s default: EXTRACTION_MODE=real is the
+    # in-cluster default, and a real CPU-only Ollama call's wall-clock time
+    # is genuinely host-load-dependent, not just model-size-dependent —
+    # confirmed live anywhere from ~150s to 7.5 minutes for a *single* call
+    # depending on what else the host was doing. FIXTURE_LIMIT=3 (see "e2e-k8s
+    # gets a small subset" above) is the real fix for *contention* between
+    # documents; this SLO is separate margin for raw inference speed varying
+    # with host load, which no amount of pipeline-side tuning controls.
+    - name: Run the synthetic canary
+      ansible.builtin.shell:
+        cmd: "{{ dotenv_cmd }} uv run python3 -m docpipeline.reconciliation.canary --slo-seconds 900"
+        chdir: "{{ repo_root }}"
+        executable: /bin/bash
+      changed_when: false
+      tags: [canary, e2e-k8s]
+
+    - name: Re-drive failed docs whose build_sha/prompt_version changed
+      ansible.builtin.shell:
+        cmd: "{{ dotenv_cmd }} uv run python3 -m docpipeline.reconciliation.dlq_replay"
+        chdir: "{{ repo_root }}"
+        executable: /bin/bash
+      changed_when: false
+      tags: [dlq-replay]
+
+    - name: Check for total silence (dead man's switch)
+      ansible.builtin.shell:
+        cmd: "{{ dotenv_cmd }} uv run python3 -m docpipeline.reconciliation.deadmans_switch"
+        chdir: "{{ repo_root }}"
+        executable: /bin/bash
+      changed_when: false
+      tags: [deadmans-switch]
+
+    # ══════════════════════════════════════════════════ e2e (host/mock) ═
+    # This section and test/summary after it must stay physically last:
+    # file order is execution order regardless of --tags, and e2e needs
+    # consumers drained before pytest's TRUNCATE fixture runs.
+    - name: Start all consumers as host processes
+      # Exec the venv interpreter directly, not `uv run` — uv forks rather
+      # than exec's, so $! would capture uv's wrapper PID, not the real one
+      # (see AGENT.md's PID-capture gotcha).
+      ansible.builtin.shell:
+        cmd: >
+          ( {{ dotenv_cmd }} exec {{ repo_root }}/.venv/bin/python3 scripts/run_local.py )
+          > /tmp/docpipeline_e2e.log 2>&1 & echo $! > /tmp/docpipeline_e2e.pid
+        chdir: "{{ repo_root }}"
+        executable: /bin/bash
+      changed_when: true
+      tags: [e2e]
+
+    - name: Give the consumers a moment to subscribe before polling
+      ansible.builtin.pause:
+        seconds: 5
+      tags: [e2e]
+
+    - name: Wait for every document to reach a terminal state
+      ansible.builtin.shell:
+        cmd: "{{ dotenv_cmd }} uv run python3 scripts/wait_for_drain.py 180"
+        chdir: "{{ repo_root }}"
+        executable: /bin/bash
+      register: drain_result
+      failed_when: false
+      changed_when: false
+      tags: [e2e]
+
+    # Every document already reached a terminal state per the drain check
+    # above, so there's nothing in-flight left to protect — a hard kill of
+    # the whole process group (negative PID) is immediate and sufficient,
+    # no graceful-then-poll needed. Still targets the group, not just the
+    # parent PID, so run_local.py's own children don't leak as zombies
+    # (see AGENT.md's PID-capture gotcha) — SIGKILL bypasses run_local.py's
+    # SIGTERM handler entirely, so this can't rely on it to clean up children.
+    - name: Stop the host consumers
+      ansible.builtin.shell:
+        cmd: |
+          kill -9 -- "-$(cat /tmp/docpipeline_e2e.pid)" 2>/dev/null || true
+          sleep 1
+          kill -0 "$(cat /tmp/docpipeline_e2e.pid)" 2>/dev/null && echo still_running || echo stopped
+        executable: /bin/bash
+      register: stop_result
+      changed_when: false
+      tags: [e2e]
+
+    # Catches a leaked consumer stack before it can straddle the next
+    # reset/fixtures cycle (see AGENT.md's PID-capture gotcha).
+    - name: Fail loudly if the host consumers did not actually stop
+      ansible.builtin.fail:
+        msg: "run_local.py (pidfile /tmp/docpipeline_e2e.pid) did not exit within 30s — check for leaked docpipeline.* processes with `ps aux | grep docpipeline`"
+      when: "'still_running' in stop_result.stdout"
+      tags: [e2e]
+
+    - name: Fail loudly if the drain timed out
+      ansible.builtin.fail:
+        msg: "e2e (host/mock) FAILED to drain in time — see /tmp/docpipeline_e2e.log"
+      when: drain_result.rc != 0
+      tags: [e2e]
+
+    # ══════════════════════════════════════════════════ test / summary ═
+    # Physically last on purpose — see the note above the e2e section.
+    - name: Print the final per-document summary
+      ansible.builtin.shell:
+        cmd: "{{ dotenv_cmd }} uv run python3 scripts/summarize.py"
+        chdir: "{{ repo_root }}"
+        executable: /bin/bash
+      changed_when: false
+      tags: [summary, e2e, e2e-k8s]
+
+    - name: Run the pytest suite (mock mode)
+      ansible.builtin.shell:
+        cmd: "{{ dotenv_cmd }} uv run pytest tests/ -v --timeout=60 -k 'not real_llm'"
+        chdir: "{{ repo_root }}"
+        executable: /bin/bash
+      changed_when: false
+      tags: [test, e2e, e2e-k8s]

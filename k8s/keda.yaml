@@ -1,0 +1,42 @@
+# Scales the two deployments the design doc calls out: ocr-shard (~900 CPU
+# fleet in prod) and extraction (token-quota bound in prod). lagThreshold: "1"
+# is artificially low so a local burst actually demonstrates scale-up.
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: docpipeline-ocr-shard
+spec:
+  scaleTargetRef:
+    name: docpipeline-ocr-shard
+  minReplicaCount: 1
+  maxReplicaCount: 5
+  pollingInterval: 5
+  cooldownPeriod: 30
+  triggers:
+  - type: kafka
+    metadata:
+      bootstrapServers: host.minikube.internal:9093
+      consumerGroup: ocr-shard
+      topic: ocr.shard
+      lagThreshold: "1"
+      allowIdleConsumers: "false"
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: docpipeline-extraction
+spec:
+  scaleTargetRef:
+    name: docpipeline-extraction
+  minReplicaCount: 1
+  maxReplicaCount: 3
+  pollingInterval: 5
+  cooldownPeriod: 30
+  triggers:
+  - type: kafka
+    metadata:
+      bootstrapServers: host.minikube.internal:9093
+      consumerGroup: extraction
+      topic: ocr.completed
+      lagThreshold: "1"
+      allowIdleConsumers: "false"

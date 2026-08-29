@@ -1,0 +1,25 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: keda
+  namespace: argocd
+spec:
+  project: default
+  source:
+    # No --local override, unlike docpipeline's Application — KEDA is a
+    # third-party chart, so pulling straight from kedacore's repo is correct.
+    repoURL: https://kedacore.github.io/charts
+    chart: keda
+    targetRevision: "2.*"
+    helm:
+      releaseName: keda
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: keda
+  # Manual-only, same convention as docpipeline's Application.
+  syncPolicy:
+    syncOptions:
+      - CreateNamespace=true
+      # scaledjobs.keda.sh CRD exceeds the 262144-byte annotation limit
+      # under client-side apply; server-side apply avoids it (confirmed live).
+      - ServerSideApply=true

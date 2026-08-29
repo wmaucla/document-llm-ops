@@ -1,0 +1,107 @@
+# document-llm-ops — single entrypoint. Every target is a thin alias
+# for `ansible-playbook ansible/site.yml --tags <name>` (see site.yml).
+#
+#   make e2e       fast loop — host-based consumers, mock LLM (steps 0-7)
+#   make e2e-k8s   full loop — K8s Deployments via ArgoCD, KEDA, real LLM,
+#                  destroys + rebuilds the whole cluster (steps 8-9)
+
+ANSIBLE := ansible-playbook -i ansible/inventory.ini ansible/site.yml
+
+.PHONY: help install up down init-db topics fixtures reset run-local test test-real-llm \
+        cluster-rebuild image keda-install deploy redeploy undeploy k8s-status canary dlq-replay \
+        deadmans-switch summary e2e e2e-k8s
+
+help:
+	@echo "make install       uv sync the project (no manual venv — uv run handles the rest)"
+	@echo "make up            docker compose up (Postgres/Redpanda/fake-gcs-server/Redis)"
+	@echo "make down          docker compose down"
+	@echo "make init-db       apply migrations/*.sql"
+	@echo "make reset         truncate ledger, clear GCS, wipe Redpanda, flush Redis"
+	@echo "make topics        create every Kafka topic"
+	@echo "make fixtures      generate + upload the 14 design-doc fixtures"
+	@echo "make run-local     run all consumers as host processes (mock LLM, fast)"
+	@echo "make test          run the pytest suite (mock mode, ~3s)"
+	@echo "make test-real-llm run the opt-in real-LLM integration test (needs port-forward, slow)"
+	@echo "make cluster-rebuild  DESTRUCTIVE: minikube delete + start, then rebuild the sibling"
+	@echo "                   mlops-llm-repo's entire stack (ArgoCD/Ollama/LiteLLM/Langfuse) via"
+	@echo "                   its own terraform apply. Runs automatically as part of e2e-k8s."
+	@echo "make image         build the docpipeline image into minikube's docker daemon"
+	@echo "make keda-install  apply the KEDA ArgoCD Application, then 'argocd app sync keda'"
+	@echo "make deploy        apply the ArgoCD Application, then 'argocd app sync --local ./k8s'"
+	@echo "make undeploy      remove everything make deploy created"
+	@echo "make k8s-status    show docpipeline pods + ScaledObjects"
+	@echo "make canary        inject + track one synthetic document end to end"
+	@echo "make dlq-replay    re-drive failed docs whose build_sha/prompt_version changed"
+	@echo "make deadmans-switch  check for total silence (exits 1 if unhealthy)"
+	@echo "make e2e           fast end-to-end run: reset -> fixtures -> host consumers -> test"
+	@echo "make e2e-k8s       full end-to-end run: DESTROYS + rebuilds the whole minikube cluster,"
+	@echo "                   then reset -> fixtures -> image -> ArgoCD deploy -> canary (~10-15 min)"
+
+install:
+	uv sync --extra dev
+
+up:
+	$(ANSIBLE) --tags up
+
+down:
+	$(ANSIBLE) --tags down
+
+init-db:
+	$(ANSIBLE) --tags init-db
+
+reset:
+	$(ANSIBLE) --tags reset
+
+topics:
+	$(ANSIBLE) --tags topics
+
+fixtures:
+	$(ANSIBLE) --tags fixtures
+
+run-local:
+	set -a && . ./.env && set +a && uv run python3 scripts/run_local.py
+
+test:
+	set -a && . ./.env && set +a && uv run pytest tests/ -v --timeout=60 -k "not real_llm"
+
+test-real-llm:
+	@echo "needs: kubectl port-forward svc/litellm 4000:4000 &  (separately, left running)"
+	set -a && . ./.env && set +a && RUN_REAL_LLM_TESTS=1 uv run pytest tests/test_real_llm_integration.py -v -s --timeout=300
+
+cluster-rebuild:
+	$(ANSIBLE) --tags cluster-rebuild
+
+image:
+	$(ANSIBLE) --tags image
+
+keda-install:
+	$(ANSIBLE) --tags keda-install
+
+deploy:
+	$(ANSIBLE) --tags deploy
+
+undeploy:
+	$(ANSIBLE) --tags undeploy
+
+k8s-status:
+	kubectl get pods -l 'app in (docpipeline-triage,docpipeline-pdf-worker,docpipeline-ocr-shard,docpipeline-extraction,docpipeline-sink-stub,docpipeline-outbox-relay,docpipeline-sweeper,docpipeline-orphan-detector)'
+	kubectl get scaledobject
+	kubectl get application docpipeline -n argocd
+
+canary:
+	$(ANSIBLE) --tags canary
+
+dlq-replay:
+	$(ANSIBLE) --tags dlq-replay
+
+deadmans-switch:
+	$(ANSIBLE) --tags deadmans-switch
+
+summary:
+	$(ANSIBLE) --tags summary
+
+e2e:
+	$(ANSIBLE) --tags reset,e2e
+
+e2e-k8s:
+	$(ANSIBLE) --tags cluster-rebuild,reset,image,keda-install,deploy,e2e-k8s

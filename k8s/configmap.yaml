@@ -1,0 +1,48 @@
+# Every consumer's env — see the design doc's "Topics vs deployments":
+# topics are cheap, deployments cost ops. This ConfigMap is what turns the
+# same docpipeline image into 8 different single-purpose Deployments below.
+#
+# Postgres/Redpanda/fake-gcs-server/Redis stay on the host via docker-compose
+# (see the repo README's "Tool substitutions" deviation) — pods reach them
+# via host.minikube.internal, which minikube's docker driver resolves to the
+# host machine. litellm/langfuse are already in-cluster (the sibling
+# mlops-llm-repo's stack), reached by normal cluster DNS.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: docpipeline-config
+data:
+  PGHOST: "host.minikube.internal"
+  PGPORT: "55432"
+  PGDATABASE: "docpipeline"
+  PIPELINE_RW_USER: "pipeline_rw"
+  PIPELINE_RW_PASSWORD: "pipeline_rw_pw"
+  PIPELINE_RO_USER: "pipeline_ro"
+  PIPELINE_RO_PASSWORD: "pipeline_ro_pw"
+
+  KAFKA_BOOTSTRAP_SERVERS: "host.minikube.internal:9093"
+
+  STORAGE_EMULATOR_HOST: "http://host.minikube.internal:4443"
+  GCS_BUCKET: "docpipeline-local"
+  GOOGLE_CLOUD_PROJECT: "local-project"
+
+  REDIS_URL: "redis://host.minikube.internal:6380/0"
+
+  OCR_ENGINE: "mock"
+  OCR_DPI: "150"
+
+  SHARD_SIZE_PAGES: "1"
+  HARD_PAGE_CEILING: "20"
+  SWEEPER_BATCH_CAP: "5"
+  SWEEPER_CADENCE_SECONDS: "30"
+  STUCK_THRESHOLD_SECONDS: "30"
+  RELAY_POLL_SECONDS: "2"
+  RELAY_BATCH_CAP: "50"
+  ORPHAN_DETECTOR_INTERVAL_SECONDS: "10"
+
+  # Real in-cluster (litellm's reachable via DNS here); make e2e (host-only)
+  # still defaults to mock in config.py for its fast ~15s loop. Flip back:
+  #   kubectl set env deployment/docpipeline-extraction EXTRACTION_MODE=mock
+  EXTRACTION_MODE: "real"
+  LITELLM_BASE_URL: "http://litellm.default.svc.cluster.local:4000"
+  LITELLM_MASTER_KEY: "sk-demo-key"

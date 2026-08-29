@@ -1,0 +1,762 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>document-llm-ops-workflow</title>
+<style>
+:root{
+  --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --mono: "SF Mono", Menlo, Monaco, Consolas, ui-monospace, monospace;
+  --bg:#0B1220; --panel:#0F172A; --panel2:#111C33;
+  --ink:#F1F5F9; --ink-dim:#94A3B8; --ink-mute:#64748B;
+  --line:#243044;
+  --blue:#60A5FA; --blue-dim:rgba(96,165,250,.10);
+  --slate:#94A3B8; --slate-dim:rgba(148,163,184,.09);
+  --green:#4ADE80; --green-dim:rgba(74,222,128,.10);
+  --amber:#FBBF24; --amber-dim:rgba(251,191,36,.12);
+  --red:#F87171; --red-dim:rgba(248,113,113,.10);
+}
+*{box-sizing:border-box;}
+html{scroll-behavior:smooth;}
+html,body{margin:0;background:var(--bg);color:var(--ink);
+  font-family:var(--font);-webkit-font-smoothing:antialiased;}
+::selection{background:rgba(96,165,250,.35);}
+
+.top-progress{position:fixed;top:0;left:0;height:3px;width:0%;
+  background:linear-gradient(90deg,var(--blue),var(--green));z-index:80;}
+
+/* ── hero ── */
+.intro{min-height:100vh;height:100vh;display:flex;flex-direction:column;
+  align-items:center;justify-content:center;text-align:center;padding:6vh 6vw;
+  background:radial-gradient(ellipse at 50% 20%, rgba(96,165,250,.10), transparent 60%);}
+.intro .eyebrow{font-size:clamp(12px,1vw,17px);font-weight:700;letter-spacing:.24em;
+  text-transform:uppercase;color:var(--blue);margin-bottom:18px;}
+.intro h1{font-size:clamp(30px,4.6vw,80px);font-weight:800;letter-spacing:-.02em;
+  line-height:1.03;margin:0 0 20px;}
+.intro p{font-size:clamp(15px,1.4vw,23px);color:var(--ink-dim);max-width:700px;
+  line-height:1.55;margin:0;}
+.mono-inline{font-family:var(--mono);color:var(--ink);}
+.scroll-cue{margin-top:44px;font-size:12px;letter-spacing:.18em;text-transform:uppercase;
+  color:var(--ink-mute);animation:bob 1.8s ease-in-out infinite;}
+@keyframes bob{0%,100%{transform:translateY(0);}50%{transform:translateY(8px);}}
+
+/* ── generic section ── */
+.section{max-width:1180px;margin:0 auto;padding:14vh 6vw 10vh;}
+.section .eyebrow{font-size:clamp(11px,0.85vw,15px);font-weight:700;letter-spacing:.2em;
+  text-transform:uppercase;color:var(--blue);margin-bottom:14px;}
+.section h2{font-size:clamp(26px,3vw,52px);font-weight:800;letter-spacing:-.01em;
+  margin:0 0 16px;line-height:1.12;max-width:26em;}
+.section .lede{font-size:clamp(14px,1.15vw,20px);color:var(--ink-dim);max-width:46em;
+  line-height:1.55;margin:0 0 clamp(22px,3vw,44px);}
+
+/* ── reveal mechanic ── */
+.reveal{opacity:0;transform:translateY(18px);
+  transition:opacity .6s ease, transform .6s ease;
+  transition-delay:calc(var(--i,0) * 90ms);}
+.reveal.show{opacity:1;transform:translateY(0);}
+
+/* ── rows ── */
+.rows{display:flex;flex-direction:column;gap:12px;}
+.row{display:flex;align-items:center;gap:14px;padding:14px 20px;border-radius:10px;
+  background:var(--panel);border:1px solid var(--line);}
+.row .pill{flex:none;font-weight:800;font-size:clamp(12px,0.95vw,17px);
+  padding:5px 14px;border-radius:999px;white-space:nowrap;}
+.row .desc{font-size:clamp(13px,1.02vw,18px);color:var(--ink-dim);line-height:1.4;}
+.pill.p-blue{background:var(--blue-dim);color:var(--blue);}
+.pill.p-slate{background:var(--slate-dim);color:var(--slate);}
+.pill.p-green{background:var(--green-dim);color:var(--green);}
+.pill.p-amber{background:var(--amber-dim);color:var(--amber);}
+.pill.p-red{background:var(--red-dim);color:var(--red);}
+
+/* ── icons (single-stroke line-art, shared sprite defined in #archSvg) ── */
+.ic{fill:none;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round;}
+.ic-fill{fill:currentColor;stroke:none;}
+.ic-row{width:24px;height:24px;flex:none;stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round;fill:none;}
+.ic-row.c-red{color:var(--red);} .ic-row.c-amber{color:var(--amber);}
+.ic-row.c-blue{color:var(--blue);} .ic-row.c-slate{color:var(--slate);}
+.ic-row.c-green{color:var(--green);}
+.ic-row{stroke:currentColor;}
+
+/* ── ref badges ── */
+.ref{display:inline-block;margin-left:8px;font-size:.68em;font-weight:800;color:var(--blue);
+  background:var(--blue-dim);border:1px solid rgba(96,165,250,.3);border-radius:5px;
+  padding:1px 8px;vertical-align:middle;cursor:pointer;}
+.ref:hover{background:rgba(96,165,250,.22);}
+
+/* ── cards ── */
+.cards3{display:flex;gap:20px;flex-wrap:wrap;}
+.card{flex:1;min-width:220px;background:var(--panel);border:1px solid var(--line);
+  border-radius:12px;padding:clamp(16px,1.8vw,28px);border-top:4px solid var(--slate);}
+.card.c-slate{border-top-color:var(--slate);}
+.card.c-green{border-top-color:var(--green);}
+.card.c-blue{border-top-color:var(--blue);}
+.card-top{display:flex;align-items:center;gap:12px;margin-bottom:10px;}
+.card-top .ic-card{width:28px;height:28px;flex:none;stroke-width:1.5;stroke-linecap:round;
+  stroke-linejoin:round;fill:none;}
+.card.c-slate .ic-card{stroke:var(--slate);color:var(--slate);}
+.card.c-green .ic-card{stroke:var(--green);color:var(--green);}
+.card.c-blue .ic-card{stroke:var(--blue);color:var(--blue);}
+.card .num{font-size:clamp(20px,1.8vw,32px);font-weight:800;color:var(--line);}
+.card h3{margin:0 0 8px;font-size:clamp(15px,1.3vw,23px);font-weight:800;}
+.card p{margin:0;font-size:clamp(13px,1.05vw,18px);color:var(--ink-dim);line-height:1.5;}
+
+/* ── two-column compare ── */
+.compare{display:flex;gap:20px;flex-wrap:wrap;}
+.compare .col{flex:1;min-width:260px;background:var(--panel);border:1px solid var(--line);
+  border-radius:12px;padding:clamp(16px,1.8vw,26px);}
+.compare .col.right{background:var(--green-dim);border-color:rgba(74,222,128,.25);}
+.compare .col h3{margin:0 0 14px;font-size:clamp(13px,1.05vw,19px);font-weight:800;
+  letter-spacing:.03em;}
+.compare .col.left h3{color:var(--ink-dim);}
+.compare .col.right h3{color:var(--green);}
+.compare ul{margin:0;padding-left:1.15em;display:flex;flex-direction:column;gap:10px;}
+.compare li{font-size:clamp(13px,1.02vw,18px);color:var(--ink-dim);line-height:1.5;}
+.ask{margin-top:22px;padding:14px 20px;background:var(--blue-dim);border-left:4px solid var(--blue);
+  border-radius:0 8px 8px 0;font-size:clamp(13px,1vw,18px);color:#DBEAFE;}
+.ask b{color:#fff;}
+
+/* ── architecture scene ── */
+.scene{display:grid;grid-template-columns:minmax(0,0.85fr) minmax(0,1.35fr);
+  max-width:1600px;margin:0 auto;}
+.prose{padding:0 3vw 0 6vw;}
+.step{min-height:78vh;display:flex;flex-direction:column;justify-content:center;
+  padding:6vh 0;opacity:.3;transition:opacity .4s ease;}
+.step.on{opacity:1;}
+.step .step-eyebrow{font-size:11px;font-weight:800;letter-spacing:.18em;
+  text-transform:uppercase;color:var(--blue);margin-bottom:10px;}
+.step h3{margin:0 0 10px;font-size:clamp(19px,1.9vw,32px);font-weight:800;}
+.step p{margin:0;font-size:clamp(13.5px,1.05vw,19px);color:var(--ink-dim);
+  line-height:1.55;max-width:36em;}
+.sticky{position:sticky;top:0;height:100vh;display:flex;align-items:center;
+  justify-content:center;padding:3vh 2vw;}
+.diagram-wrap{background:var(--panel);border:1px solid var(--line);border-radius:16px;
+  padding:16px;width:100%;height:100%;display:flex;flex-direction:column;min-height:0;}
+.diagram-wrap svg{width:100%;flex:1;min-height:0;display:block;}
+.legend{display:flex;flex-wrap:wrap;flex:none;gap:14px;justify-content:center;margin-bottom:12px;}
+.lg{display:flex;align-items:center;gap:7px;font-size:11px;color:var(--ink-dim);font-weight:600;}
+.sw{width:18px;height:11px;border-radius:4px;flex:none;}
+.sw.d-blue{border:2px solid var(--blue);background:var(--blue-dim);}
+.sw.d-slate{border:2px solid var(--slate);background:var(--slate-dim);}
+.sw.d-green{border:2px solid var(--green);background:var(--green-dim);}
+.sw.d-async{border:0;border-top:2px dashed var(--ink-mute);background:transparent;}
+.sw.d-gate{border:0;border-top:2px dashed var(--amber);background:transparent;}
+.sw.d-ext{border:2px dashed var(--slate);background:transparent;}
+
+/* arch svg reveal */
+#archSvg [data-key]{opacity:0;transition:opacity .55s ease;}
+#archSvg [data-key].show{opacity:1;}
+#archSvg .hi rect.box{stroke:var(--amber) !important;
+  filter:drop-shadow(0 0 6px rgba(251,191,36,.5));}
+
+@media (max-width:900px){
+  .scene{grid-template-columns:1fr;}
+  .sticky{position:relative;height:52vh;top:auto;}
+  .step{min-height:auto;padding:5vh 0;}
+}
+
+/* ── appendix ── */
+.divider{min-height:52vh;display:flex;flex-direction:column;align-items:center;
+  justify-content:center;text-align:center;
+  background:linear-gradient(180deg,var(--bg) 0%,#08101E 100%);
+  border-top:1px solid var(--line);border-bottom:1px solid var(--line);}
+.divider .eyebrow{color:var(--green);font-size:clamp(11px,0.9vw,16px);font-weight:700;
+  letter-spacing:.22em;text-transform:uppercase;margin-bottom:16px;}
+.divider h2{font-size:clamp(40px,5.5vw,96px);font-weight:800;margin:0;letter-spacing:-.02em;}
+.divider p{color:var(--ink-dim);font-size:clamp(13px,1vw,18px);margin-top:14px;}
+
+.apx-tag{font-size:11px;font-weight:800;letter-spacing:.16em;text-transform:uppercase;
+  color:var(--green);margin-bottom:10px;}
+
+table.apx{width:100%;border-collapse:collapse;font-size:clamp(11.5px,0.95vw,16px);}
+table.apx th{text-align:left;font-size:10px;text-transform:uppercase;letter-spacing:.06em;
+  color:var(--ink-mute);background:rgba(255,255,255,.03);padding:8px 10px;
+  border-bottom:1px solid var(--line);}
+table.apx td{padding:8px 10px;border-bottom:1px solid var(--line);color:var(--ink-dim);
+  vertical-align:top;}
+table.apx tr:nth-child(even) td{background:rgba(255,255,255,.015);}
+table.apx td.mono{font-family:var(--mono);font-size:.92em;color:var(--ink);}
+table.apx td.num{font-variant-numeric:tabular-nums;text-align:right;}
+
+.gate-callout{display:flex;align-items:center;gap:14px;background:var(--amber-dim);
+  border:1px solid rgba(251,191,36,.3);border-left:4px solid var(--amber);
+  border-radius:0 8px 8px 0;padding:14px 20px;margin-top:16px;}
+.gate-callout .big{font-size:clamp(18px,1.7vw,28px);font-weight:800;color:var(--amber);
+  font-variant-numeric:tabular-nums;white-space:nowrap;}
+.gate-callout .txt{font-size:clamp(12px,0.95vw,16px);color:#FDE68A;}
+
+.code-block{background:#060B14;color:#CBD5E1;border-radius:8px;padding:14px;
+  font-family:var(--mono);font-size:clamp(10.5px,0.82vw,13.5px);line-height:1.6;
+  overflow-x:auto;white-space:pre;border:1px solid var(--line);}
+
+.split{display:flex;gap:20px;flex-wrap:wrap;}
+.split .p{flex:1;min-width:260px;display:flex;flex-direction:column;gap:10px;}
+.panel-title{font-weight:800;font-size:13px;letter-spacing:.03em;padding:7px 12px;
+  border-radius:6px;}
+.panel-title.blue{background:var(--blue-dim);color:var(--blue);}
+.panel-title.green{background:var(--green-dim);color:var(--green);}
+.panel-title.amber{background:var(--amber-dim);color:var(--amber);}
+.callout{padding:12px 16px;border-radius:8px;font-size:clamp(12px,0.95vw,16px);line-height:1.5;}
+.callout.blue{background:var(--blue-dim);border:1px solid rgba(96,165,250,.25);color:#BFDBFE;}
+.callout.green{background:var(--green-dim);border:1px solid rgba(74,222,128,.25);color:#BBF7D0;}
+.callout.amber{background:var(--amber-dim);border:1px solid rgba(251,191,36,.3);color:#FDE68A;}
+
+.src{font-size:11px;color:var(--ink-mute);margin-top:14px;}
+.apx-link{border-bottom:1.5px dotted currentColor;cursor:pointer;}
+.apx-link:hover{color:var(--blue);}
+
+footer.close{text-align:center;padding:10vh 6vw 8vh;color:var(--ink-mute);font-size:13px;}
+footer.close a{color:var(--ink-dim);}
+</style>
+</head>
+<body>
+
+<div class="top-progress" id="topProgress"></div>
+
+<!-- ══════════════════════ HERO ══════════════════════ -->
+<section class="intro">
+  <div class="eyebrow">Reference architecture</div>
+  <h1>document-llm-ops</h1>
+  <p>A production-shaped document pipeline for 100k docs/day -- a real state machine, a scatter-gather join, deterministic quality gates, and a reconciliation tier that recovers lost work -- built and proven on a laptop, not just designed on paper.</p>
+  <div class="scroll-cue">Scroll &darr;</div>
+</section>
+
+<!-- ══════════════════════ PROBLEM ══════════════════════ -->
+<section class="section" id="problem">
+  <div class="eyebrow">The problem</div>
+  <h2>At 100k docs/day, "mostly works" is a production incident</h2>
+  <p class="lede">A document pipeline isn't a queue of independent jobs -- it's a state machine under concurrency, and most of the hard bugs live exactly at the seams a simple retry loop can't see.</p>
+  <div class="rows">
+    <div class="row reveal" style="--i:0"><svg class="ic-row c-red" viewBox="0 0 20 20"><use href="#ic-split"/></svg><span class="pill p-red">Scatter-gather is a hazard</span><span class="desc">A sharded document's last shard can commit while another replica is still mid-write -- a naive <span class="mono-inline" style="font-size:.95em">SELECT count(*)</span> join can miss or double-fire.</span></div>
+    <div class="row reveal" style="--i:1"><svg class="ic-row c-amber" viewBox="0 0 20 20"><use href="#ic-warn"/></svg><span class="pill p-amber">Retries diverge</span><span class="desc">A redelivered message and its retry can both reach "complete" with different extracted values -- something has to decide, structurally, which one wins.</span></div>
+    <div class="row reveal" style="--i:2"><svg class="ic-row c-slate" viewBox="0 0 20 20"><use href="#ic-link-broken"/></svg><span class="pill p-slate">Lost work hides quietly</span><span class="desc">A crashed worker mid-extraction leaves a document silently stuck -- nothing fails loudly, it just never finishes.</span></div>
+    <div class="row reveal" style="--i:3"><svg class="ic-row c-blue" viewBox="0 0 20 20"><use href="#ic-shield-check"/></svg><span class="pill p-blue">A model can lie convincingly</span><span class="desc">Prompt injection or hallucination can produce an answer that looks grounded in the source text but is still arithmetically wrong.</span></div>
+  </div>
+</section>
+
+<!-- ══════════════════════ WHAT WE BUILT ══════════════════════ -->
+<section class="section" id="built">
+  <div class="eyebrow">What we built</div>
+  <h2>Steps 0-10 of the design doc's own build order</h2>
+  <p class="lede">Every piece below is live-verified against real infra -- not mocked out for the demo.<span class="ref" data-jump="apx-a1">A1</span></p>
+  <div class="rows">
+    <div class="row reveal" style="--i:0"><svg class="ic-row c-blue" viewBox="0 0 20 20"><use href="#ic-cylinder"/></svg><span class="pill p-blue">Postgres ledger</span><span class="desc">A real state machine with a guarded <span class="mono-inline" style="font-size:.95em">transition()</span> -- illegal moves raise loudly instead of silently corrupting state.</span></div>
+    <div class="row reveal" style="--i:1"><svg class="ic-row c-blue" viewBox="0 0 20 20"><use href="#ic-server"/></svg><span class="pill p-blue">Transactional outbox</span><span class="desc">A polling relay publishes to Kafka only after the DB commit -- exactly-once-effective delivery without a distributed transaction.</span></div>
+    <div class="row reveal" style="--i:2"><svg class="ic-row c-green" viewBox="0 0 20 20"><use href="#ic-split"/></svg><span class="pill p-green">Scatter-gather join</span><span class="desc"><span class="mono-inline" style="font-size:.95em">UPDATE ... RETURNING</span> under the parent row's lock -- never a count query -- so the join fires exactly once, even under concurrent final shards.</span></div>
+    <div class="row reveal" style="--i:3"><svg class="ic-row c-green" viewBox="0 0 20 20"><use href="#ic-shield-check"/></svg><span class="pill p-green">5 deterministic quality gates</span><span class="desc">Grounding, arithmetic, IBAN checksum, plausibility, business dedupe -- arithmetic is what actually defeats prompt injection, not grounding.</span></div>
+    <div class="row reveal" style="--i:4"><svg class="ic-row c-slate" viewBox="0 0 20 20"><use href="#ic-clock"/></svg><span class="pill p-slate">Reconciliation tier</span><span class="desc">Sweeper, orphan detector, DLQ replay, dead man's switch, and a synthetic canary -- the safety net that recovers lost work automatically.</span></div>
+    <div class="row reveal" style="--i:5"><svg class="ic-row c-amber" viewBox="0 0 20 20"><use href="#ic-gauge"/></svg><span class="pill p-amber">KEDA autoscaling</span><span class="desc">Real <span class="mono-inline" style="font-size:.95em">ScaledObject</span>s on Kafka consumer lag -- genuinely observed scaling a Deployment from 1 to 3 replicas under a 150-document burst.</span></div>
+    <div class="row reveal" style="--i:6"><svg class="ic-row c-amber" viewBox="0 0 20 20"><use href="#ic-gitops"/></svg><span class="pill p-amber">ArgoCD, GitOps end to end</span><span class="desc">Every K8s manifest -- app Deployments and the KEDA operator itself -- deploys through <span class="mono-inline" style="font-size:.95em">argocd app sync</span>, never a raw <span class="mono-inline" style="font-size:.95em">kubectl apply</span>.</span></div>
+    <div class="row reveal" style="--i:7"><svg class="ic-row c-slate" viewBox="0 0 20 20"><use href="#ic-flask"/></svg><span class="pill p-slate">Real local LLM</span><span class="desc">The extraction funnel's real tier calls the sibling repo's Ollama-backed LiteLLM gateway -- zero marginal cost, zero hosted-API calls anywhere in this codebase.</span></div>
+  </div>
+</section>
+
+<!-- ══════════════════════ ARCHITECTURE (stepped scrollytelling) ══════════════════════ -->
+<section class="scene" id="architecture">
+  <div class="prose">
+    <div class="step" data-step="0">
+      <div class="step-eyebrow">Architecture</div>
+      <h3>How a document actually moves</h3>
+      <p>From an uploaded PDF to a posted, auto-approved record -- every arrow below is a real Kafka topic or a real Postgres transaction, not a conceptual box. Scroll to follow one document through.</p>
+    </div>
+    <div class="step" data-step="1">
+      <div class="step-eyebrow">01 &middot; The foundation</div>
+      <h3>Ansible + ArgoCD provision everything</h3>
+      <p>Ansible orchestrates the whole deploy; ArgoCD owns every K8s manifest inside the cluster, including the KEDA operator itself. Nothing here is a raw <span class="mono-inline" style="font-size:.95em">kubectl apply</span>.</p>
+    </div>
+    <div class="step" data-step="2">
+      <div class="step-eyebrow">02 &middot; Ingest</div>
+      <h3>The orphan detector *is* the ingest path</h3>
+      <p>Locally, fake-gcs-server has no bucket-notification wiring -- so a 10s polling loop that finds new objects under <span class="mono-inline" style="font-size:.95em">inbox/</span> is the design doc's own recommended fallback, not a shortcut. Triage classifies and creates the one ledger row.</p>
+    </div>
+    <div class="step" data-step="3">
+      <div class="step-eyebrow">03 &middot; Fan out, then rejoin</div>
+      <h3>Scatter-gather, without a lost-join hazard</h3>
+      <p>Large scans split into page-range shards that OCR in parallel. The join that detects "all shards done" is a single guarded <span class="mono-inline" style="font-size:.95em">UPDATE ... RETURNING</span> under the parent row's lock -- the winning shard publishes; it does not reassemble.</p>
+    </div>
+    <div class="step" data-step="4">
+      <div class="step-eyebrow">04 &middot; Extraction funnel</div>
+      <h3>Cheap model first, gated at every step</h3>
+      <p>Mock/cheap/strong tiers, each result checked by five deterministic gates before anything auto-posts. First-writer-wins on commit -- a redelivered retry can never overwrite an already-committed result.</p>
+    </div>
+    <div class="step" data-step="5">
+      <div class="step-eyebrow">05 &middot; Watched and self-healing</div>
+      <h3>Lost work gets found automatically</h3>
+      <p>The sweeper, DLQ replay, dead man's switch, and a synthetic canary run continuously underneath everything else. KEDA watches Kafka consumer lag and scales the busiest stages up on its own.</p>
+    </div>
+  </div>
+
+  <div class="sticky">
+    <div class="diagram-wrap">
+      <div class="legend">
+        <div class="lg"><span class="sw d-blue"></span>kubernetes cluster</div>
+        <div class="lg"><span class="sw d-ext"></span>external &middot; outside cluster</div>
+        <div class="lg"><span class="sw d-slate"></span>ingest &amp; ledger</div>
+        <div class="lg"><span class="sw d-green"></span>fan-out, join &amp; extraction</div>
+        <div class="lg"><span class="sw d-gate"></span>KEDA autoscale &middot; async</div>
+        <div class="lg"><span class="sw d-async"></span>reconciliation &middot; async</div>
+      </div>
+      <svg id="archSvg" viewBox="0 0 760 460" preserveAspectRatio="xMidYMid meet" role="img"
+           aria-label="Architecture diagram. Two external boxes sit above a large Kubernetes cluster boundary: Ansible plus ArgoCD, which provisions and deploys everything, and 14 fixture PDFs feeding in from outside as the upload source. Inside the cluster, top to bottom: an ingest band with the orphan detector, triage, and the Postgres ledger; a fan-out and join band with the PDF worker, OCR shard workers, and the scatter-gather join, annotated with a KEDA autoscale badge; an extraction band with the extraction funnel, five quality gates, and the outbox feeding a sink; and a dashed reconciliation band underneath with the sweeper, DLQ replay, dead man's switch, and a synthetic canary.">
+        <defs>
+          <marker id="a-g" markerWidth="8" markerHeight="8" refX="6.2" refY="4" orient="auto">
+            <path d="M0.5,1 L6.5,4 L0.5,7" fill="none" stroke="rgba(255,255,255,.55)" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+          </marker>
+          <marker id="a-amber" markerWidth="8" markerHeight="8" refX="6.2" refY="4" orient="auto">
+            <path d="M0.5,1 L6.5,4 L0.5,7" fill="none" stroke="#FBBF24" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+          </marker>
+
+          <!-- shared icon sprite, referenced from here and from plain HTML <use> elsewhere on the page -->
+          <symbol id="ic-cube" viewBox="0 0 20 20">
+            <polygon points="10,1 18,5.5 18,14.5 10,19 2,14.5 2,5.5"/>
+            <line x1="10" y1="1" x2="10" y2="10"/><line x1="2" y1="5.5" x2="10" y2="10"/><line x1="18" y1="5.5" x2="10" y2="10"/>
+          </symbol>
+          <symbol id="ic-layers" viewBox="0 0 20 20">
+            <path d="M10 2 L18 6.5 L10 11 L2 6.5 Z"/>
+            <path d="M2 10.5 L10 15 L18 10.5"/><path d="M2 14.5 L10 19 L18 14.5"/>
+          </symbol>
+          <symbol id="ic-dag" viewBox="0 0 20 20">
+            <circle cx="4" cy="10" r="2"/><line x1="6" y1="10" x2="13" y2="4"/><circle cx="15" cy="4" r="2"/>
+            <line x1="6" y1="10" x2="13" y2="16"/><circle cx="15" cy="16" r="2"/>
+          </symbol>
+          <symbol id="ic-grid" viewBox="0 0 20 20">
+            <rect x="2" y="2" width="7" height="7"/><rect x="11" y="2" width="7" height="7"/>
+            <rect x="2" y="11" width="7" height="7"/><rect x="11" y="11" width="7" height="7"/>
+          </symbol>
+          <symbol id="ic-flask" viewBox="0 0 20 20">
+            <path d="M8 2 H12 V8 L17 18 H3 L8 8 Z"/><line x1="7" y1="2" x2="13" y2="2"/><line x1="6.5" y1="13" x2="13.5" y2="13"/>
+          </symbol>
+          <symbol id="ic-bucket" viewBox="0 0 20 20">
+            <path d="M3 5 H17 L15 17 H5 Z"/><line x1="3" y1="5" x2="17" y2="5"/>
+          </symbol>
+          <symbol id="ic-server" viewBox="0 0 20 20">
+            <rect x="3" y="3" width="14" height="6" rx="1.2"/><rect x="3" y="11" width="14" height="6" rx="1.2"/>
+            <circle class="ic-fill" cx="6" cy="6" r="0.9"/><circle class="ic-fill" cx="6" cy="14" r="0.9"/>
+            <line x1="9" y1="6" x2="14" y2="6"/><line x1="9" y1="14" x2="14" y2="14"/>
+          </symbol>
+          <symbol id="ic-gauge" viewBox="0 0 20 20">
+            <path d="M3 15 A7 7 0 0 1 17 15"/><line x1="10" y1="15" x2="14" y2="7.5"/><circle class="ic-fill" cx="10" cy="15" r="1.1"/>
+          </symbol>
+          <symbol id="ic-cylinder" viewBox="0 0 20 20">
+            <ellipse cx="10" cy="4" rx="7" ry="2.4"/>
+            <path d="M3 4v6c0 1.3 3.1 2.4 7 2.4s7-1.1 7-2.4V4"/><path d="M3 10v6c0 1.3 3.1 2.4 7 2.4s7-1.1 7-2.4v-6"/>
+          </symbol>
+          <symbol id="ic-gitops" viewBox="0 0 20 20">
+            <path d="M4.5 10a5.5 5.5 0 0 1 9-4.2"/><path d="M13.5 3.5 L13.5 6.5 L10.5 6.5"/>
+            <path d="M15.5 10a5.5 5.5 0 0 1-9 4.2"/><path d="M6.5 16.5 L6.5 13.5 L9.5 13.5"/>
+          </symbol>
+          <symbol id="ic-warn" viewBox="0 0 20 20">
+            <path d="M10 2.5 L18.5 17 H1.5 Z"/><line x1="10" y1="8" x2="10" y2="12.5"/><circle class="ic-fill" cx="10" cy="15" r="0.9"/>
+          </symbol>
+          <symbol id="ic-link-broken" viewBox="0 0 20 20">
+            <rect x="1.5" y="10.5" width="6" height="3.4" rx="1.7"/><rect x="11" y="6" width="6" height="3.4" rx="1.7"/>
+            <circle class="ic-fill" cx="9.5" cy="9.5" r="0.8"/>
+          </symbol>
+          <symbol id="ic-clock" viewBox="0 0 20 20">
+            <circle cx="10" cy="10" r="8"/><line x1="10" y1="10" x2="10" y2="5.5"/><line x1="10" y1="10" x2="13.5" y2="12"/>
+          </symbol>
+          <symbol id="ic-shield-check" viewBox="0 0 20 20">
+            <path d="M10 2 L17 5 V10 C17 14.5 14 17.5 10 19 C6 17.5 3 14.5 3 10 V5 Z"/><path d="M6.5 10 L9 12.5 L14 7"/>
+          </symbol>
+          <symbol id="ic-split" viewBox="0 0 20 20">
+            <path d="M10 2 V8"/><path d="M10 8 L4 18"/><path d="M10 8 L16 18"/><circle class="ic-fill" cx="10" cy="8" r="1"/>
+          </symbol>
+        </defs>
+
+        <!-- ── edges (behind nodes) ── -->
+        <line data-key="edgeAnsibleCluster" x1="155" y1="62" x2="155" y2="76" stroke="rgba(148,163,184,.6)" stroke-width="1.6" stroke-dasharray="4 3" stroke-linecap="round" marker-end="url(#a-g)"/>
+        <path data-key="edgeFixturesOrphan" d="M 585 62 L 585 92 L 340 92 L 340 122" fill="none" stroke="rgba(148,163,184,.6)" stroke-width="1.6" stroke-dasharray="4 3" stroke-linecap="round" marker-end="url(#a-g)"/>
+        <line data-key="edgeOrphanTriage" x1="230" y1="156" x2="250" y2="156" stroke="rgba(255,255,255,.4)" stroke-width="1.6" stroke-linecap="round" marker-end="url(#a-g)"/>
+        <line data-key="edgeTriageLedger" x1="430" y1="156" x2="450" y2="156" stroke="rgba(255,255,255,.4)" stroke-width="1.6" stroke-linecap="round" marker-end="url(#a-g)"/>
+        <line data-key="edgeLedgerPdf" x1="565" y1="196" x2="565" y2="212" stroke="rgba(255,255,255,.4)" stroke-width="1.6" stroke-linecap="round" marker-end="url(#a-g)"/>
+        <path data-key="edgeLedgerPdf" d="M 565 212 L 130 212 L 130 224" fill="none" stroke="rgba(255,255,255,.4)" stroke-width="1.6" stroke-linecap="round" marker-end="url(#a-g)"/>
+        <line data-key="edgePdfOcr" x1="220" y1="256" x2="240" y2="256" stroke="rgba(255,255,255,.4)" stroke-width="1.6" stroke-linecap="round" marker-end="url(#a-g)"/>
+        <line data-key="edgeOcrJoin" x1="400" y1="256" x2="420" y2="256" stroke="rgba(255,255,255,.4)" stroke-width="1.6" stroke-linecap="round" marker-end="url(#a-g)"/>
+        <g data-key="edgeKeda">
+          <path d="M 320 224 L 320 200 L 660 200 L 660 224" fill="none" stroke="#FBBF24" stroke-width="1.6" stroke-dasharray="4 3" stroke-linecap="round" marker-end="url(#a-amber)"/>
+          <text x="490" y="196" text-anchor="middle" font-size="9" font-weight="700" fill="#FBBF24">KEDA &middot; scales on Kafka lag</text>
+        </g>
+        <line data-key="edgeJoinFunnel" x1="180" y1="328" x2="180" y2="344" stroke="rgba(255,255,255,.4)" stroke-width="1.6" stroke-linecap="round" marker-end="url(#a-g)"/>
+        <path data-key="edgeJoinFunnel" d="M 545 328 L 545 336 L 180 336 L 180 344" fill="none" stroke="rgba(255,255,255,.4)" stroke-width="1.6" stroke-linecap="round" marker-end="url(#a-g)"/>
+        <line data-key="edgeFunnelGates" x1="290" y1="376" x2="310" y2="376" stroke="rgba(255,255,255,.4)" stroke-width="1.6" stroke-linecap="round" marker-end="url(#a-g)"/>
+        <line data-key="edgeGatesSink" x1="520" y1="376" x2="540" y2="376" stroke="rgba(255,255,255,.4)" stroke-width="1.6" stroke-linecap="round" marker-end="url(#a-g)"/>
+        <path data-key="edgeReconcile" d="M 380 408 L 380 420" fill="none" stroke="rgba(148,163,184,.5)" stroke-width="1.6" stroke-dasharray="5 4" stroke-linecap="round" marker-end="url(#a-g)"/>
+
+        <!-- ══ EXTERNAL · OUTSIDE THE CLUSTER ══ -->
+        <g data-key="ansibleNode">
+          <rect class="box" x="40" y="14" width="230" height="48" rx="14" fill="rgba(148,163,184,0.05)" stroke="#94A3B8" stroke-width="1.4" stroke-dasharray="5 4"/>
+          <use href="#ic-layers" x="54" y="28" width="20" height="20" class="ic" color="#CBD5E1" stroke="#CBD5E1"/>
+          <text x="82" y="37" font-size="12" font-weight="700" fill="#F1F5F9">Ansible + ArgoCD</text>
+          <text x="82" y="52" font-size="9" fill="#94A3B8">provisions + deploys &middot; external</text>
+        </g>
+        <g data-key="fixturesNode">
+          <rect class="box" x="470" y="14" width="230" height="48" rx="14" fill="rgba(148,163,184,0.05)" stroke="#94A3B8" stroke-width="1.4" stroke-dasharray="5 4"/>
+          <use href="#ic-bucket" x="484" y="28" width="20" height="20" class="ic" color="#CBD5E1" stroke="#CBD5E1"/>
+          <text x="512" y="37" font-size="12" font-weight="700" fill="#F1F5F9">14 fixture PDFs</text>
+          <text x="512" y="52" font-size="9" fill="#94A3B8">uploaded to inbox/ &middot; external</text>
+        </g>
+
+        <!-- ══ KUBERNETES CLUSTER · the background everything else deploys onto ══ -->
+        <rect data-key="clusterBoundary" x="20" y="78" width="720" height="364" rx="26" fill="rgba(96,165,250,0.04)" stroke="#60A5FA" stroke-width="2.4" stroke-dasharray="10 6"/>
+        <rect data-key="clusterBoundary" x="38" y="66" width="280" height="24" rx="8" fill="#0F172A"/>
+        <use data-key="clusterBoundary" href="#ic-cube" x="44" y="70" width="16" height="16" class="ic" color="#60A5FA" stroke="#60A5FA"/>
+        <text data-key="clusterBoundary" x="66" y="82" font-size="11" font-weight="800" letter-spacing="0.08em" fill="#60A5FA">MINIKUBE &middot; ARGOCD-MANAGED</text>
+
+        <!-- ══ BAND 1 (in-cluster) · INGEST & LEDGER ══ -->
+        <rect data-key="bandIngest" x="40" y="104" width="680" height="92" rx="16" fill="rgba(148,163,184,0.045)" stroke="#94A3B8" stroke-width="1.3" opacity="0.85"/>
+        <rect data-key="bandIngest" x="56" y="94" width="180" height="20" rx="6" fill="#0F172A"/>
+        <text data-key="bandIngest" x="64" y="108" font-size="10" font-weight="800" letter-spacing="0.1em" fill="#94A3B8">INGEST &amp; LEDGER</text>
+
+        <g data-key="orphanNode">
+          <rect class="box" x="50" y="124" width="180" height="64" rx="16" fill="rgba(148,163,184,0.08)" stroke="#94A3B8" stroke-width="1.4"/>
+          <use href="#ic-clock" x="64" y="140" width="24" height="24" class="ic" color="#E2E8F0" stroke="#E2E8F0"/>
+          <text x="96" y="150" font-size="13" font-weight="700" fill="#F1F5F9">Orphan detector</text>
+          <text x="96" y="165" font-size="9" fill="#94A3B8">10s poll &middot; *is* the ingest path</text>
+        </g>
+        <g data-key="triageNode">
+          <rect class="box" x="250" y="124" width="180" height="64" rx="16" fill="rgba(148,163,184,0.08)" stroke="#94A3B8" stroke-width="1.4"/>
+          <use href="#ic-dag" x="264" y="140" width="24" height="24" class="ic" color="#E2E8F0" stroke="#E2E8F0"/>
+          <text x="296" y="150" font-size="13" font-weight="700" fill="#F1F5F9">Triage</text>
+          <text x="296" y="165" font-size="9" fill="#94A3B8">classify + dispatch</text>
+        </g>
+        <g data-key="ledgerNode">
+          <rect class="box" x="450" y="124" width="230" height="64" rx="16" fill="rgba(148,163,184,0.08)" stroke="#94A3B8" stroke-width="1.4"/>
+          <use href="#ic-cylinder" x="464" y="140" width="24" height="24" class="ic" color="#E2E8F0" stroke="#E2E8F0"/>
+          <text x="496" y="150" font-size="13" font-weight="700" fill="#F1F5F9">Postgres ledger</text>
+          <text x="496" y="165" font-size="9" fill="#94A3B8">state machine + outbox</text>
+        </g>
+
+        <!-- ══ BAND 2 (in-cluster) · FAN-OUT, JOIN, AUTOSCALE ══ -->
+        <rect data-key="bandJoin" x="40" y="204" width="680" height="92" rx="16" fill="rgba(74,222,128,0.045)" stroke="#4ADE80" stroke-width="1.3" opacity="0.85"/>
+        <rect data-key="bandJoin" x="56" y="194" width="290" height="20" rx="6" fill="#0F172A"/>
+        <text data-key="bandJoin" x="64" y="208" font-size="10" font-weight="800" letter-spacing="0.1em" fill="#4ADE80">FAN-OUT, JOIN &amp; AUTOSCALE</text>
+
+        <g data-key="pdfNode">
+          <rect class="box" x="50" y="224" width="160" height="64" rx="16" fill="rgba(74,222,128,0.08)" stroke="#4ADE80" stroke-width="1.4"/>
+          <use href="#ic-cube" x="64" y="240" width="24" height="24" class="ic" color="#86EFAC" stroke="#86EFAC"/>
+          <text x="96" y="250" font-size="13" font-weight="700" fill="#F1F5F9">PDF worker</text>
+          <text x="96" y="265" font-size="9" fill="#94A3B8">tier-0 pypdf text</text>
+        </g>
+        <g data-key="ocrNode">
+          <rect class="box" x="240" y="224" width="160" height="64" rx="16" fill="rgba(74,222,128,0.08)" stroke="#4ADE80" stroke-width="1.4"/>
+          <use href="#ic-grid" x="254" y="240" width="24" height="24" class="ic" color="#86EFAC" stroke="#86EFAC"/>
+          <text x="286" y="250" font-size="13" font-weight="700" fill="#F1F5F9">OCR shard</text>
+          <rect x="286" y="258" width="9" height="9" rx="2" fill="none" stroke="#4ADE80" stroke-width="1" stroke-dasharray="2 2" opacity="0.75"/>
+          <text x="300" y="266" font-size="8" fill="#94A3B8">1&ndash;5 replicas &middot; KEDA</text>
+        </g>
+        <g data-key="joinNode">
+          <rect class="box" x="420" y="224" width="270" height="64" rx="16" fill="rgba(74,222,128,0.08)" stroke="#4ADE80" stroke-width="1.4"/>
+          <use href="#ic-split" x="434" y="240" width="24" height="24" class="ic" color="#86EFAC" stroke="#86EFAC"/>
+          <text x="466" y="250" font-size="13" font-weight="700" fill="#F1F5F9">Scatter-gather join</text>
+          <text x="466" y="265" font-size="9" fill="#94A3B8">UPDATE...RETURNING &middot; fires once</text>
+        </g>
+
+        <!-- ══ BAND 3 (in-cluster) · EXTRACTION & GATES ══ -->
+        <rect data-key="bandExtract" x="40" y="304" width="680" height="92" rx="16" fill="rgba(96,165,250,0.045)" stroke="#60A5FA" stroke-width="1.3" opacity="0.85"/>
+        <rect data-key="bandExtract" x="56" y="294" width="240" height="20" rx="6" fill="#0F172A"/>
+        <text data-key="bandExtract" x="64" y="308" font-size="10" font-weight="800" letter-spacing="0.1em" fill="#60A5FA">EXTRACTION &amp; GATES</text>
+
+        <g data-key="funnelNode">
+          <rect class="box" x="50" y="324" width="230" height="64" rx="16" fill="rgba(96,165,250,0.08)" stroke="#60A5FA" stroke-width="1.4"/>
+          <use href="#ic-flask" x="64" y="340" width="24" height="24" class="ic" color="#BFDBFE" stroke="#BFDBFE"/>
+          <text x="96" y="350" font-size="13" font-weight="700" fill="#F1F5F9">Extraction funnel</text>
+          <text x="96" y="365" font-size="9" fill="#94A3B8">mock &middot; cheap &middot; strong tiers</text>
+        </g>
+        <g data-key="gatesNode">
+          <rect class="box" x="310" y="324" width="200" height="64" rx="16" fill="rgba(96,165,250,0.08)" stroke="#60A5FA" stroke-width="1.4"/>
+          <use href="#ic-shield-check" x="324" y="340" width="24" height="24" class="ic" color="#BFDBFE" stroke="#BFDBFE"/>
+          <text x="356" y="350" font-size="13" font-weight="700" fill="#F1F5F9">5 quality gates</text>
+          <text x="356" y="365" font-size="9" fill="#94A3B8">arithmetic defeats injection</text>
+        </g>
+        <g data-key="sinkNode">
+          <rect class="box" x="540" y="324" width="150" height="64" rx="16" fill="rgba(96,165,250,0.08)" stroke="#60A5FA" stroke-width="1.4"/>
+          <use href="#ic-server" x="554" y="340" width="24" height="24" class="ic" color="#BFDBFE" stroke="#BFDBFE"/>
+          <text x="586" y="350" font-size="13" font-weight="700" fill="#F1F5F9">Outbox &rarr; sink</text>
+          <text x="586" y="365" font-size="9" fill="#94A3B8">first-writer-wins</text>
+        </g>
+
+        <!-- ══ ASYNC (in-cluster) · RECONCILIATION ══ -->
+        <g data-key="reconcileNode">
+          <rect class="box" x="80" y="410" width="600" height="30" rx="14" fill="rgba(100,116,139,0.06)" stroke="#64748B" stroke-width="1.4" stroke-dasharray="5 4"/>
+          <text x="98" y="429" font-size="11" font-weight="700" fill="#F1F5F9">Sweeper &middot; DLQ replay &middot; dead man's switch &middot; canary</text>
+          <text x="600" y="429" font-size="9" fill="#94A3B8" text-anchor="end">async &middot; finds lost work</text>
+        </g>
+      </svg>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════════════════ PROOF ══════════════════════ -->
+<section class="section" id="proof">
+  <div class="eyebrow">Proven end-to-end</div>
+  <h2>Live-verified, not just designed</h2>
+  <p class="lede">Every claim below was run against real Postgres, real Kafka, and a real GCS-compatible store -- twice over, once as host processes and once as Kubernetes Deployments.<span class="ref" data-jump="apx-a2">A2</span></p>
+  <div class="cards3">
+    <div class="card c-slate reveal" style="--i:0">
+      <div class="card-top"><svg class="ic-card" viewBox="0 0 20 20"><use href="#ic-shield-check"/></svg><div class="num">01</div></div>
+      <h3>56 tests, real infra<span class="ref" data-jump="apx-a3">A3</span></h3>
+      <p>Every fixture lands on its predicted terminal state -- no mocked Postgres, no mocked Kafka. The lock/join semantics under test are exactly what a mock would paper over.</p>
+    </div>
+    <div class="card c-amber reveal" style="--i:1">
+      <div class="card-top"><svg class="ic-card" viewBox="0 0 20 20"><use href="#ic-gauge"/></svg><div class="num">02</div></div>
+      <h3>KEDA genuinely scaled<span class="ref" data-jump="apx-a4">A4</span></h3>
+      <p>A real 150-document burst pushed <span class="mono-inline" style="font-size:.95em">ocr-shard</span> from 1 to 3 replicas and back down -- observed, not assumed.</p>
+    </div>
+    <div class="card c-blue reveal" style="--i:2">
+      <div class="card-top"><svg class="ic-card" viewBox="0 0 20 20"><use href="#ic-gitops"/></svg><div class="num">03</div></div>
+      <h3>GitOps, no exceptions but two<span class="ref" data-jump="apx-a5">A5</span></h3>
+      <p>Every deploy goes through ArgoCD, KEDA's operator included. The only raw <span class="mono-inline" style="font-size:.95em">kubectl</span> calls left apply the Application objects themselves.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════════════════ WHY IT MATTERS ══════════════════════ -->
+<section class="section" id="why">
+  <div class="eyebrow">Why it matters</div>
+  <h2>A reusable blueprint for correctness at scale</h2>
+  <div class="compare">
+    <div class="col left reveal" style="--i:0">
+      <h3>PROVEN HERE</h3>
+      <ul>
+        <li>Every hazard -- lost joins, retry divergence, stuck states -- has a structural guard, not a code-review convention</li>
+        <li>Runs entirely for $0, on a laptop, with a real local LLM</li>
+        <li>Bugs were found and fixed live against real infra, not assumed away by mocking</li>
+      </ul>
+    </div>
+    <div class="col right reveal" style="--i:1">
+      <h3>PATH TO PRODUCTION<span class="ref" data-jump="apx-a5">A5</span></h3>
+      <ul>
+        <li>Swap the local Ollama models for a larger hosted model behind the same LiteLLM alias</li>
+        <li>Make the quality gates and role-grant checks a first-class CI gate, not just a test suite</li>
+        <li>Add the ensemble remediation this repo deliberately defers for the role-assignment gap</li>
+      </ul>
+    </div>
+  </div>
+  <div class="ask reveal" style="--i:2"><b>The ask:</b> use this as the reference for the next pipeline that can't afford to be "mostly correct."</div>
+</section>
+
+<!-- ══════════════════════ APPENDIX DIVIDER ══════════════════════ -->
+<section class="divider">
+  <div class="eyebrow">Appendix</div>
+  <h2>Detail.</h2>
+  <p>Stack versions, the state machine, the gates, and the autoscaling proof &mdash; sourced to the repo.</p>
+</section>
+
+<!-- ══════════════════════ A1 · STACK & VERSIONS ══════════════════════ -->
+<section class="section" id="apx-a1">
+  <div class="apx-tag">Appendix &middot; A1</div>
+  <h2>Stack &amp; versions</h2>
+  <table class="apx reveal" style="--i:0">
+    <thead><tr><th>Component</th><th>Role</th><th>Version</th></tr></thead>
+    <tbody>
+      <tr><td class="mono">Python / uv</td><td>Runtime + dependency management, no manual venv</td><td class="mono">3.13, uv-managed</td></tr>
+      <tr><td class="mono">Postgres</td><td>The ledger &mdash; state machine, outbox, scatter-gather join</td><td class="mono">docker-compose, host-side</td></tr>
+      <tr><td class="mono">Redpanda</td><td>Kafka-API-compatible broker</td><td class="mono">docker-compose, host-side</td></tr>
+      <tr><td class="mono">fake-gcs-server</td><td>GCS-compatible object store (claim-check payloads)</td><td class="mono">docker-compose, host-side</td></tr>
+      <tr><td class="mono">Redis</td><td>Mock-OCR registry, cross-process test state</td><td class="mono">docker-compose, host-side</td></tr>
+      <tr><td class="mono">Ansible</td><td>Sole orchestration layer &mdash; replaces bash scripts + raw kubectl/helm</td><td class="mono">tagged playbook, ansible/site.yml</td></tr>
+      <tr><td class="mono">ArgoCD</td><td>GitOps deploy for every K8s manifest, KEDA included</td><td class="mono">reused from sibling repo's terraform</td></tr>
+      <tr><td class="mono">KEDA</td><td>Autoscaling on Kafka consumer lag</td><td class="mono">2.x, ArgoCD-managed Application</td></tr>
+      <tr><td class="mono">LiteLLM + Ollama</td><td>Real LLM tier &mdash; llama3.2:1b / qwen2.5:1.5b</td><td class="mono">reused from sibling mlops-llm-repo</td></tr>
+      <tr><td class="mono">Langfuse</td><td>Trace visualization for every real LLM call</td><td class="mono">reused from sibling mlops-llm-repo, zero extra code</td></tr>
+    </tbody>
+  </table>
+  <div class="callout amber reveal" style="--i:1;margin-top:16px;">Found live, not on paper: <span class="mono-inline" style="font-size:.95em">uv run</span> forks a child rather than exec'ing into it, so backgrounding a long-lived process via <span class="mono-inline" style="font-size:.95em">exec uv run ...</span> captures the wrong PID. Every prior e2e run's host consumers leaked as zombies until this was fixed to exec the venv interpreter directly.</div>
+  <div class="src">Source: README.md &middot; pyproject.toml &middot; ansible/site.yml &middot; k8s/*.yaml &middot; argocd/*.yaml &middot; AGENT.md.</div>
+</section>
+
+<!-- ══════════════════════ A2 · STATE MACHINE & LEDGER ══════════════════════ -->
+<section class="section" id="apx-a2">
+  <div class="apx-tag">Appendix &middot; A2</div>
+  <h2>The state machine &amp; the scatter-gather join &middot; <span style="font-family:var(--mono);font-weight:700;">docpipeline/core/ledger.py</span></h2>
+  <table class="apx reveal" style="--i:0">
+    <thead><tr><th style="width:22%">Guarantee</th><th>How it's enforced</th></tr></thead>
+    <tbody>
+      <tr><td class="mono">transition()</td><td>A single guarded <span class="mono-inline" style="font-size:.95em">UPDATE ... WHERE state = ANY(allowed) RETURNING state</span>. Raises <span class="mono-inline" style="font-size:.95em">IllegalTransition</span> rather than silently no-op&#39;ing &mdash; a <span class="mono-inline" style="font-size:.95em">_running</span> state is only enterable from its own <span class="mono-inline" style="font-size:.95em">_pending</span> state.</td></tr>
+      <tr><td class="mono">record_shard_and_maybe_join()</td><td>Inserts the shard with <span class="mono-inline" style="font-size:.95em">ON CONFLICT DO NOTHING</span> (duplicate deliveries are free no-ops), then <span class="mono-inline" style="font-size:.95em">UPDATE ... RETURNING shards_done, shards_total</span> under the same row lock &mdash; never a separate count query, which is exactly the read that can observe a stale value mid-commit.</td></tr>
+      <tr><td class="mono">commit_extraction_result()</td><td>First-writer-wins: <span class="mono-inline" style="font-size:.95em">UPDATE ... WHERE extraction_result IS NULL</span>. A redelivered retry that races an already-committed result loses, deterministically.</td></tr>
+      <tr><td class="mono">pipeline_ro grants</td><td>No <span class="mono-inline" style="font-size:.95em">INSERT</span> on outbox, no Kafka producer credentials &mdash; the operator's read-only replay lane is structurally incapable of writing, not merely a function that happens not to call <span class="mono-inline" style="font-size:.95em">enqueue()</span>.</td></tr>
+    </tbody>
+  </table>
+  <div class="src">Source: docpipeline/core/ledger.py &middot; tests/test_state_machine.py &middot; tests/test_scatter_gather_join.py &middot; tests/test_read_only_role.py.</div>
+</section>
+
+<!-- ══════════════════════ A3 · QUALITY GATES ══════════════════════ -->
+<section class="section" id="apx-a3">
+  <div class="apx-tag">Appendix &middot; A3</div>
+  <h2>Five deterministic quality gates &middot; <span style="font-family:var(--mono);font-weight:700;">docpipeline/core/gates.py</span></h2>
+  <table class="apx reveal" style="--i:0">
+    <thead><tr><th style="width:16%">Gate</th><th>What it catches</th><th style="width:14%">On inconclusive</th></tr></thead>
+    <tbody>
+      <tr><td class="mono">grounding</td><td>Every extracted value appears in the source text &mdash; catches hallucination directly, but not a swapped seller/buyer (both genuinely appear in the text).</td><td class="mono">blocks</td></tr>
+      <tr><td class="mono">arithmetic</td><td>Recomputes the subtotal from line items independently &mdash; this is what actually defeats prompt injection, since grounding alone passes an injected-but-present total.</td><td class="mono">blocks</td></tr>
+      <tr><td class="mono">iban_mod97</td><td>IBAN checksum validation.</td><td class="mono">allows</td></tr>
+      <tr><td class="mono">plausibility</td><td>Total within a sane ceiling; due date within a year of the issue date.</td><td class="mono">n/a (fail/pass only)</td></tr>
+      <tr><td class="mono">business_dedupe</td><td>Catches a rescanned/re-emailed duplicate &mdash; different bytes, same <span class="mono-inline" style="font-size:.95em">(vendor, invoice_no)</span> &mdash; which the content-checksum primary key alone cannot.</td><td class="mono">blocks</td></tr>
+    </tbody>
+  </table>
+  <div class="gate-callout reveal" style="--i:1">
+    <div class="big">applies_to &ne; model output</div>
+    <div class="txt"><span class="mono-inline" style="font-size:.95em">arithmetic</span>'s <span class="mono-inline" style="font-size:.95em">applies_to</span> is <span class="mono-inline" style="font-size:.95em">doc_type == "invoice"</span>, set by a keyword heuristic at <em>triage</em> time &mdash; before extraction ever runs. A model can't evade the gate by simply omitting <span class="mono-inline" style="font-size:.95em">line_items</span>, because the predicate was already decided before it got a chance to answer.</div>
+  </div>
+  <div class="src">Source: docpipeline/core/gates.py &middot; tests/test_gates.py &middot; tests/test_extraction_funnel.py (injected_total, swapped_roles, refusal, context_overflow scenarios via a programmable mock model).</div>
+</section>
+
+<!-- ══════════════════════ A4 · KEDA AUTOSCALING PROOF ══════════════════════ -->
+<section class="section" id="apx-a4">
+  <div class="apx-tag">Appendix &middot; A4</div>
+  <h2>KEDA autoscaling &mdash; observed, not assumed</h2>
+  <div class="split">
+    <div class="p reveal" style="--i:0">
+      <div class="panel-title amber">ScaledObject config</div>
+      <table class="apx">
+        <thead><tr><th>Field</th><th>Value</th></tr></thead>
+        <tbody>
+          <tr><td>target</td><td class="mono">docpipeline-ocr-shard &middot; docpipeline-extraction</td></tr>
+          <tr><td>trigger</td><td class="mono">kafka consumer lag &middot; lagThreshold: "1"</td></tr>
+          <tr><td>range</td><td class="mono">ocr-shard 1&ndash;5 &middot; extraction 1&ndash;3</td></tr>
+          <tr><td>managed by</td><td class="mono">argocd/keda-application.yaml &middot; not a raw helm install</td></tr>
+        </tbody>
+      </table>
+      <div class="callout amber"><span class="mono-inline" style="font-size:.95em">lagThreshold: "1"</span> is set artificially low on purpose &mdash; a production threshold would never trip at local fixture volume, and the whole point of building this locally is exercising the mechanism, not leaving it unexercised.</div>
+    </div>
+    <div class="p reveal" style="--i:1">
+      <div class="panel-title green">Observed under a 150-doc burst</div>
+      <div class="code-block">$ kubectl get hpa keda-hpa-docpipeline-ocr-shard
+keda-hpa-docpipeline-ocr-shard   Deployment/docpipeline-ocr-shard   3/1 (avg)   1   5   3</div>
+      <table class="apx">
+        <thead><tr><th>Metric</th><th class="num">Value</th></tr></thead>
+        <tbody>
+          <tr><td class="mono">Replicas before burst</td><td class="num">1</td></tr>
+          <tr><td class="mono">Replicas at peak lag</td><td class="num">3</td></tr>
+          <tr><td class="mono">Replicas after drain</td><td class="num">1</td></tr>
+        </tbody>
+      </table>
+      <div class="callout green">Confirmed live via <span class="mono-inline" style="font-size:.9em">kubectl get hpa</span> during the burst, not inferred from the YAML applying cleanly.</div>
+    </div>
+  </div>
+  <div class="src">Source: k8s/keda.yaml &middot; argocd/keda-application.yaml &middot; README.md "KEDA -- actually observed scaling" section.</div>
+</section>
+
+<!-- ══════════════════════ A5 · PRODUCTION READINESS ══════════════════════ -->
+<section class="section" id="apx-a5">
+  <div class="apx-tag">Appendix &middot; A5</div>
+  <h2>What's demo-only &mdash; production readiness gaps</h2>
+  <p class="lede">This repo optimizes for "every structural hazard is genuinely guarded, on a laptop, for $0" &mdash; not "safe to expose publicly" or "safe to auto-promote." These are the deliberate shortcuts, and what closes each one.</p>
+  <table class="apx reveal" style="--i:0">
+    <thead><tr><th>Area</th><th>This repo (demo)</th><th>Needed for production</th></tr></thead>
+    <tbody>
+      <tr><td>CI enforcement</td><td>Quality gates and the read-only/break-glass role split are proven by the test suite and by running live &mdash; not gated in CI</td><td>Make both a first-class CI check, independent of which script invokes the pipeline</td></tr>
+      <tr><td>Role-assignment gap</td><td><span class="mono-inline" style="font-size:.95em">grounding</span> passes on a swapped seller/buyer (both genuinely appear in the text); this repo proves the gap exists but doesn't implement the ensemble remediation</td><td>A second, independent extraction pass or a role-specific consistency check</td></tr>
+      <tr><td>Cluster lifecycle</td><td><span class="mono-inline" style="font-size:.95em">make e2e-k8s</span> deletes and rebuilds the entire minikube cluster every run &mdash; correct for a clean-room demo, far too slow and destructive for a shared environment</td><td>A persistent cluster with proper reconcile-on-drift instead of delete-and-rebuild</td></tr>
+      <tr><td>Real LLM latency</td><td>A CPU-only 1B model takes up to ~200s per call under load &mdash; fine for a canary, not for a production SLO</td><td>A right-sized hosted or GPU-backed model behind the same LiteLLM alias</td></tr>
+      <tr><td>Secrets</td><td>Postgres/LiteLLM credentials are hardcoded demo values in docker-compose.yml / k8s/configmap.yaml</td><td>A real secret manager (Vault, External Secrets), rotated credentials</td></tr>
+      <tr><td>Data durability</td><td><span class="mono-inline" style="font-size:.95em">make reset</span> truncates the ledger and recreates Redpanda from scratch by design</td><td>Managed Postgres/Kafka with backups and point-in-time recovery</td></tr>
+      <tr><td>Network</td><td>No NetworkPolicies; every pod can reach every pod</td><td>Namespace-scoped NetworkPolicies, least privilege</td></tr>
+    </tbody>
+  </table>
+  <div class="src">Source: README.md &middot; AGENT.md &middot; ansible/site.yml &middot; k8s/*.yaml &middot; docker-compose.yml.</div>
+</section>
+
+<footer class="close">document-llm-ops &middot; a local replication of <a href="../../mlops-llm-repo">the 100k docs/day design doc</a>, reusing the sibling <a href="../../mlops-llm-repo">mlops-llm-repo</a>'s LiteLLM/Ollama/Langfuse stack</footer>
+
+<script>
+const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
+
+/* ── top reading-progress bar ── */
+const topProgress=document.getElementById('topProgress');
+let tpTicking=false;
+function onScrollProgress(){
+  if(tpTicking) return; tpTicking=true;
+  requestAnimationFrame(()=>{
+    const h=document.documentElement;
+    const total=h.scrollHeight-h.clientHeight;
+    const p=total>0?clamp(h.scrollTop/total,0,1):0;
+    topProgress.style.width=(p*100).toFixed(1)+'%';
+    tpTicking=false;
+  });
+}
+window.addEventListener('scroll',onScrollProgress,{passive:true});
+window.addEventListener('resize',onScrollProgress);
+onScrollProgress();
+
+/* ── generic fade-up reveal ── */
+const io=new IntersectionObserver(entries=>{
+  entries.forEach(en=>{
+    if(en.isIntersecting){ en.target.classList.add('show'); io.unobserve(en.target); }
+  });
+},{threshold:.15, rootMargin:'0px 0px -8% 0px'});
+document.querySelectorAll('.reveal').forEach(el=>io.observe(el));
+
+/* ── stepped scrollytelling: architecture diagram build-out ── */
+const STEPS=[
+  {show:[]},
+  {show:['clusterBoundary','ansibleNode','edgeAnsibleCluster'], hi:['clusterBoundary','ansibleNode']},
+  {show:['bandIngest','orphanNode','triageNode','ledgerNode','fixturesNode','edgeFixturesOrphan','edgeOrphanTriage','edgeTriageLedger'], hi:['orphanNode','triageNode','ledgerNode']},
+  {show:['bandJoin','pdfNode','ocrNode','joinNode','edgeLedgerPdf','edgePdfOcr','edgeOcrJoin','edgeKeda'], hi:['joinNode','ocrNode']},
+  {show:['bandExtract','funnelNode','gatesNode','sinkNode','edgeJoinFunnel','edgeFunnelGates','edgeGatesSink'], hi:['funnelNode','gatesNode']},
+  {show:['reconcileNode','edgeReconcile'], hi:['reconcileNode']}
+];
+function applyStep(step){
+  const shown=new Set();
+  for(let i=1;i<=step;i++) STEPS[i].show.forEach(k=>shown.add(k));
+  const hiSet=new Set(step>=1 && STEPS[step].hi ? STEPS[step].hi : []);
+  document.querySelectorAll('#archSvg [data-key]').forEach(el=>{
+    const k=el.dataset.key;
+    el.classList.toggle('show', shown.has(k));
+    el.classList.toggle('hi', hiSet.has(k));
+  });
+}
+const archSteps=[...document.querySelectorAll('#architecture .step')];
+const archIo=new IntersectionObserver(entries=>{
+  entries.forEach(en=>{
+    if(!en.isIntersecting) return;
+    archSteps.forEach(s=>s.classList.remove('on'));
+    en.target.classList.add('on');
+    applyStep(+en.target.dataset.step);
+  });
+},{ rootMargin:'-45% 0px -45% 0px', threshold:0 });
+archSteps.forEach(s=>archIo.observe(s));
+applyStep(0);
+
+/* ── clickable A# refs jump to the matching appendix section ── */
+document.querySelectorAll('.ref[data-jump]').forEach(el=>{
+  el.addEventListener('click', ()=>{
+    const target=document.getElementById(el.dataset.jump);
+    if(target) target.scrollIntoView({behavior:'smooth', block:'start'});
+  });
+});
+const APX_IDS={A1:'apx-a1',A2:'apx-a2',A3:'apx-a3',A4:'apx-a4',A5:'apx-a5'};
+const APX_REGEX=/\b(A5|A4|A3|A2|A1)\b/g;
+function wrapApxRefs(root){
+  const walker=document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+    acceptNode(node){
+      const p=node.parentElement;
+      if(!p || p.closest('script, style, svg, h1, h2, .ref, .apx-link, .apx-tag')) return NodeFilter.FILTER_REJECT;
+      return APX_REGEX.test(node.nodeValue) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
+    }
+  });
+  const targets=[]; let n;
+  while((n=walker.nextNode())) targets.push(n);
+  targets.forEach(node=>{
+    const frag=document.createDocumentFragment();
+    let lastIndex=0;
+    node.nodeValue.replace(APX_REGEX, (match,_g,offset)=>{
+      frag.appendChild(document.createTextNode(node.nodeValue.slice(lastIndex,offset)));
+      const span=document.createElement('span');
+      span.className='apx-link'; span.dataset.apx=match; span.textContent=match;
+      span.addEventListener('click', ()=>{
+        const target=document.getElementById(APX_IDS[match]);
+        if(target) target.scrollIntoView({behavior:'smooth', block:'start'});
+      });
+      frag.appendChild(span);
+      lastIndex=offset+match.length;
+    });
+    frag.appendChild(document.createTextNode(node.nodeValue.slice(lastIndex)));
+    node.parentNode.replaceChild(frag, node);
+  });
+}
+wrapApxRefs(document.body);
+</script>
+</body>
+</html>
