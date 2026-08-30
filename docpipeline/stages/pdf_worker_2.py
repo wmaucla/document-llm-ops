@@ -15,7 +15,7 @@ import math
 from docpipeline import config
 from docpipeline.core import artifact, ledger
 from docpipeline.infra import gcs, kafka_utils
-from docpipeline.stages import pdf_utils
+from docpipeline.text import pdf_utils
 
 log = logging.getLogger(__name__)
 

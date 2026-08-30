@@ -1,4 +1,8 @@
 services:
+  # host-mode `make e2e` only — `make e2e-k8s` runs its own in-cluster
+  # Postgres/Redis/Redpanda/fake-gcs-server instead (see
+  # k8s/templates/infra.yaml), so this file no longer needs a listener for
+  # minikube pods to reach in on.
   redpanda:
     image: docker.redpanda.com/redpandadata/redpanda:v24.2.7
     command:
@@ -9,11 +13,10 @@ services:
       - --overprovisioned
       - --node-id=0
       - --check=false
-      - --kafka-addr=PLAINTEXT://0.0.0.0:29092,OUTSIDE://0.0.0.0:9092,PODS://0.0.0.0:9093
-      - --advertise-kafka-addr=PLAINTEXT://redpanda:29092,OUTSIDE://localhost:9092,PODS://host.minikube.internal:9093
+      - --kafka-addr=PLAINTEXT://0.0.0.0:29092,OUTSIDE://0.0.0.0:9092
+      - --advertise-kafka-addr=PLAINTEXT://redpanda:29092,OUTSIDE://localhost:9092
     ports:
       - "9092:9092"
-      - "9093:9093"  # step 9: same broker, advertised for minikube pods via host.minikube.internal
       - "9644:9644"
     healthcheck:
       test: ["CMD", "rpk", "cluster", "health", "--exit-when-healthy"]

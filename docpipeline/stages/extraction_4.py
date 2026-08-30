@@ -32,7 +32,7 @@ def _call_model(doc_id: str, tier: str, source_text: str, attempt_no: int, repai
     gateway (step 8) — same exception contract either way, so the tier/repair
     loop above doesn't need to know which one is running."""
     if config.EXTRACTION_MODE == "real":
-        return llm_client.extract(tier, source_text, repair_hint=repair_hint)
+        return llm_client.extract(doc_id, tier, source_text, repair_hint=repair_hint)
     return mock_llm.MockLLM.extract(doc_id, tier, source_text, attempt_no)
 
 
@@ -177,6 +177,7 @@ def handle_ocr_completed(conn: psycopg.Connection, doc_id: str) -> str:
         with conn.cursor() as cur:
             ledger.commit_extraction_result(cur, doc_id, {}, gate_results, "review")
         conn.commit()
+        llm_client.push_gate_scores(doc_id, gate_results)
         return "review:gates_exhausted"
 
     with conn.cursor() as cur:
@@ -194,6 +195,7 @@ def handle_ocr_completed(conn: psycopg.Connection, doc_id: str) -> str:
         with conn.cursor() as cur:
             ledger.commit_extraction_result(cur, doc_id, fields, gate_results, "review")
         conn.commit()
+        llm_client.push_gate_scores(doc_id, gate_results)
         return "review:kill_switch"
 
     payload = {
@@ -219,6 +221,7 @@ def handle_ocr_completed(conn: psycopg.Connection, doc_id: str) -> str:
             gate_results["business_dedupe"] = gates.GateResult("fail", {"reason": "unique_violation_at_commit"}).to_json()
             ledger.route_without_writing(cur, doc_id, gate_results, "review")
         conn.commit()
+        llm_client.push_gate_scores(doc_id, gate_results)
         return "review:duplicate"
 
     if not won:
@@ -226,7 +229,12 @@ def handle_ocr_completed(conn: psycopg.Connection, doc_id: str) -> str:
             current = ledger.get_document(cur, doc_id)
         if current and current["extraction_result"] != fields:
             log.warning("extract_divergence_detected doc=%s", doc_id)
+        # The winner already pushed (or will push) this document's scores —
+        # scoring a discarded, non-authoritative result here would be
+        # misleading, especially if it diverged from what actually committed.
         return "discarded:not_first_writer"
+
+    llm_client.push_gate_scores(doc_id, gate_results)
 
     return "complete"
 

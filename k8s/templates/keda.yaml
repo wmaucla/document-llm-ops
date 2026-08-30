@@ -1,0 +1,30 @@
+{{- range .Values.keda.scaledObjects }}
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: docpipeline-{{ .name }}
+  # Wave 2, strictly after the app tier (wave 1, templates/deployment.yaml):
+  # scaleTargetRef must resolve to an existing Deployment or KEDA's admission
+  # webhook rejects the ScaledObject outright ("doesn't have correct
+  # scaleTargetRef specification") -- confirmed live when this had no wave
+  # annotation and defaulted to wave 0 alongside templates/jobs.yaml, before
+  # the target Deployments existed. That failure degraded the whole sync and
+  # blocked every later wave, including the app tier itself.
+  annotations: {argocd.argoproj.io/sync-wave: "2"}
+spec:
+  scaleTargetRef:
+    name: {{ .target }}
+  minReplicaCount: {{ .minReplicaCount }}
+  maxReplicaCount: {{ .maxReplicaCount }}
+  pollingInterval: 5
+  cooldownPeriod: 30
+  triggers:
+  - type: kafka
+    metadata:
+      bootstrapServers: {{ $.Values.keda.kafkaBootstrapServers }}
+      consumerGroup: {{ .consumerGroup }}
+      topic: {{ .topic }}
+      lagThreshold: "1"
+      allowIdleConsumers: "false"
+---
+{{- end }}

@@ -1,104 +1,44 @@
 # AGENT.md
 
 Notes for an AI agent (or new contributor) picking up this repo cold. For the "why" behind the
-overall design, see [README.md](README.md) — this file is the implementation-level gotchas and
-mechanics that aren't obvious from reading the code once, several of them confirmed only by
-running the thing live and watching it misbehave.
+overall design, see [README.md](README.md) — this file is the implementation-level gotchas,
+mechanics, and open bugs that aren't obvious from reading the code once. For the session-by-session
+story of how each of these was found and fixed (or not), see [HISTORY.md](HISTORY.md) — this file
+stays current-state only.
 
-## Handoff: where this stands right now
+## Known open bugs / standing risks
 
-**Confirmed solid, no open questions:**
-- `make e2e` (host, mock mode) — 56/56 tests pass, all 14 fixtures reach correct terminal states,
-  ~15s, stable across many repeated runs.
-- The K8s *deployment mechanics*: ArgoCD sync via `--core` (no port-forward), KEDA fully
-  ArgoCD-managed, all 8 Deployments + 2 `ScaledObject`s deploy and become available, Kafka clients
-  correctly reconnect after a Redpanda recreate. Each of these was a real, reproduced, root-caused
-  bug found live — see the sections below for each one's fix.
-- Repo migrated from the old `llmops-document-pipeline` working directory into this one
-  (`document-llm-ops`), pushed to `github.com/wmaucla/document-llm-ops`. This is now the canonical
-  location; the old directory is untouched but no longer the source of truth.
-- **GPU passthrough is now confirmed working end-to-end in Kubernetes, not just raw Docker.**
-  `document-llm-ops/ansible/site.yml`'s minikube start passes `--gpus=all`, and the sibling
-  `mlops-llm-repo`'s `k8s/ollama.yaml` requests `nvidia.com/gpu: 1` (stock `ollama/ollama` image, no
-  special build). Verified live on the cluster left running from the interrupted `make e2e-k8s`
-  attempt: `kubectl describe nodes minikube` shows `nvidia.com/gpu: 1` in both Capacity and
-  Allocatable (the device plugin — `nvidia-device-plugin-daemonset` in `kube-system` — registered
-  correctly); the ollama pod initially hit `FailedScheduling: Insufficient nvidia.com/gpu` for the
-  ~8s before the device plugin finished registering, then scheduled fine on retry (transient, not a
-  bug); `kubectl exec -n default deploy/ollama -- nvidia-smi` shows the RTX 2080 Ti; ollama's own
-  logs show `msg="inference compute" library=CUDA compute=7.5 name="NVIDIA GeForce RTX 2080 Ti"`;
-  `ollama ps` shows `100% GPU` (full offload, no CPU fallback layers). A real `/api/generate` call
-  via `kubectl port-forward` (warm, model already resident) returned in **0.079s total /
-  0.055s eval** for a 3-token response — confirms this is genuinely the fix for the 150s–7.5min
-  CPU-latency problem below, not just plumbing that happens to schedule.
-  **Note: the sibling repo's `k8s/ollama.yaml` GPU edit is still uncommitted there** (`git status`
-  shows `M k8s/ollama.yaml` in `mlops-llm-repo`) — it's picked up fine since the ansible flow
-  `kubectl apply`s the file directly, but commit it there if you want it to survive independently
-  of this repo's working tree.
-
-**GPU: confirmed working, with one real transient failure mode found and one fixed:**
-- A full `make e2e-k8s` run completed through image build, ArgoCD sync, KEDA, and rollout-restart,
-  but its *first* Ollama pod instance never became healthy: `kubectl exec ... nvidia-smi` returned
-  `Failed to initialize NVML: Unknown Error`, no CUDA/GPU lines anywhere in its logs, and live
-  `slot print_timing` showed **1.2-2.1 tokens/sec** — pure CPU speed despite the GPU resource
-  request being honored by the scheduler. This is a real, observed race: the GPU device plugin can
-  register with the node before it's actually able to hand out a working device to the *first*
-  container that claims it. **Fix confirmed live:** `kubectl delete pod` on the broken instance
-  forced a fresh scheduling attempt, and the replacement pod's `nvidia-smi` worked immediately
-  (`RTX 2080 Ti`, 2028MiB used, no errors). If a GPU-requesting pod is stuck `0/1 Ready` for more
-  than a couple minutes past its model-pull window, don't assume it'll self-heal — delete it and
-  let it reschedule.
-- **Confirmed-live gotcha, already fixed in `mlops-llm-repo/k8s/ollama.yaml`:** the readiness
-  probe's default 1s `timeoutSeconds` was too tight — two sequential `ollama list` invocations take
-  ~2-3s combined, so the probe flapped on an otherwise-healthy server, dropping the Service's only
-  endpoint (`kubectl get endpoints ollama` showed none) and making every downstream call fail with
-  "connection refused," which is exactly what made 6 documents sit at `extract_pending` with **zero**
-  extraction attempts logged even after the full 900s canary SLO elapsed — not a Kafka/consumer-group
-  bug, a starved-endpoint bug. Fixed with `timeoutSeconds: 5` on that probe.
-- **Real, measured GPU speedup once past the above:** a warm `/api/generate` call returned in
-  **6.03s total / 0.065s eval** for the tokenizer's `eval_duration` specifically (vs. the
-  documented 150s-7.5min CPU baseline) — genuinely GPU-accelerated, not just scheduled-with-a-GPU.
-  `ollama` Deployment in the sibling repo requests `nvidia.com/gpu: 1`; `document-llm-ops/ansible/
-  site.yml`'s minikube start passes `--gpus=all`. **The sibling repo's `k8s/ollama.yaml` edits are
-  still uncommitted there** (`git status` shows `M k8s/ollama.yaml`) — pick up fine via `kubectl
-  apply` regardless, but commit them there if you want them to survive independently of this
-  working tree.
-
-**Real bug found once GPU speed unblocked everything downstream — not an infra issue:**
-- **The canary's own synthetic document reproducibly lands in `review`, not `complete`, twice in a
-  row with an identical result** (`arithmetic` gate: `computed=100, declared=-100`) — the real model
-  extracts the total as **negative** for a document that never states a negative anywhere. Likely
-  cause: `canary.py`'s line item is phrased `"Line Item: Canary probe - 1.00"`, and
-  `llm_client.py`'s own prompt says `total_cents (integer, negative for credit memos)` — the small
-  model may be reading the bare hyphen-as-separator as a sign, or over-applying the
-  negative-for-credit-memos instruction to a document that isn't one. **This is the gates working
-  correctly** (`arithmetic` and `plausibility` both correctly rejected the bad value rather than
-  auto-posting it), not a pipeline defect — but it means the canary's strict "must reach `complete`"
-  check may not be the right success criterion for real-mode, since a real small model's occasional
-  gate-caught mistake is expected behavior, not pipeline failure.
-  **Do not "fix" this by just changing the delimiter in `canary.py`** — I tried
-  (`"Canary probe: 1.00"`) and reverted it: `mock_llm.py`'s line-item regex
-  (`r"Line Item:\s*(.+?)\s*-\s*(\$?-?[\d,]+\.\d{2})"`) *requires* the literal `" - "` separator, so
-  changing it breaks mock-mode canary parsing (arithmetic gate would see zero line items and go
-  `inconclusive` instead of `pass`). Same `" - "` format is used by every other fixture's line items
-  in `fixture_content.py`/`generate_fixtures.py` too, so they likely have the same latent risk under
-  real mode. **Real fix, not yet done:** either (a) make the mock regex accept a second, unambiguous
-  delimiter and migrate the canary (and ideally all fixtures) to it, or (b) decide the canary should
-  accept `review` as a pass condition when `EXTRACTION_MODE=real` (distinguishing "processed and
-  correctly gated" from "never processed at all," which is the failure mode that actually matters).
-- **Next step: run a full clean `make e2e-k8s` end to end** with all of the above already fixed
-  (readiness probe timeout, PID-capture, poison-message handling, max-poll-interval, `--core` mode,
-  `FIXTURE_LIMIT=3`) and confirm the *pipeline* (not necessarily the canary's `complete` assertion)
-  behaves correctly start to finish — expect the canary to still report `review` unless the
-  delimiter issue above is fixed first, and don't mistake that for an infra regression if it happens.
-- Consider adding a lightweight direct-Ollama smoke test (call `docpipeline.stages.llm_client.extract()`
-  standalone, no Kafka/K8s involved) as a *second*, faster health check alongside the canary —
-  proves Ollama connectivity in isolation without depending on consumer-group mechanics. Discussed,
-  not implemented.
-
-**Environment note:** docker daemon was found stopped at the start of this session (needed
-`sudo systemctl start docker` — the agent cannot do this itself, no interactive sudo). Check it's
-running before assuming any infra command failure is a code/config bug.
+1. **Wedged extraction consumer — not root-caused.** A `docpipeline-extraction` replica can
+   silently stop consuming after processing exactly one message: no crash, no restart, no error
+   logged, just goes quiet while still `Running`/`Ready`. Reproduced independently 3 times across
+   fresh clusters, always with the same signature (`kubectl exec deploy/redpanda -- rpk group
+   describe extraction` shows lag stuck on one partition while others are caught up). No liveness
+   probe currently detects this, so it can go unnoticed indefinitely. Delegated to a background
+   investigation (`mcp__ccd_session__spawn_task`, title "Root-cause wedged docpipeline-extraction
+   consumer") — check its status before re-investigating from scratch. Full evidence in
+   [HISTORY.md](HISTORY.md).
+2. **GPU-registration race on cluster rebuild — mitigated, not eliminated.** The nested
+   Docker-driver minikube node's GPU device plugin can register with kubelet before the NVIDIA
+   Container Toolkit runtime hook is actually ready, so the first pod to claim the GPU silently
+   falls back to CPU inference (`nvidia-smi: Failed to initialize NVML`, `slot print_timing` under
+   ~5 t/s). Recurs on a large fraction of `make e2e-k8s` runs. Mitigated by a self-heal check in
+   `ansible/site.yml` (real inference warm-call + log grep, not just `nvidia-smi` — a pod can pass
+   `nvidia-smi` and still fail at actual inference) that deletes and re-warms the pod if broken.
+   Manual fix if it slips through: `kubectl delete pod -l app=ollama`.
+3. **Canary `arithmetic`-gate false positive under `EXTRACTION_MODE=real` — not fixed.** The
+   canary's synthetic document sometimes has its total extracted as negative by the real small
+   model (`computed=100, declared=-100`), tripping the gate and landing the canary in `review`
+   instead of `complete`. Confirmed *not* a line-item delimiter ambiguity (that hypothesis was
+   fixed and then disproven by re-test); the surviving hypothesis is `llm_client.py`'s prompt
+   instruction (`total_cents (integer, negative for credit memos)`) being over-applied by the small
+   model. Currently absorbed, not fixed: `canary.py`'s `run_canary()` treats `review` as a valid
+   pass condition when `EXTRACTION_MODE=real` (mock mode still requires `complete`, since mock
+   extraction is deterministic and `review` there means something is actually broken).
+4. **`docpipeline/text/ocr_engine.py`'s mock-registry path resolves one directory too high.**
+   `DEFAULT_REGISTRY_PATH` resolves to `docpipeline/fixtures/generated/...` instead of the intended
+   top-level `fixtures/generated/...`. Self-consistent (read and write agree), so nothing observably
+   breaks — but `make reset`'s registry-clear step is a no-op on the file actually in use. Delegated
+   to a background investigation (`mcp__ccd_session__spawn_task`, task_id `task_9e94a96f`).
 
 ## What this repo is
 
@@ -136,27 +76,51 @@ stack, not mocks.
   `gates.py` (five deterministic quality gates — see below), `models.py`, `artifact.py` (GCS
   read/write helpers for OCR page text and shard output).
 - `docpipeline/infra/` — `gcs.py`, `kafka_utils.py` (thin wrappers, no business logic).
-- `docpipeline/stages/` — one module per pipeline stage: `triage.py` (ingest + classify +
-  dispatch), `pdf_worker.py`/`ocr_shard.py` (text production), `extraction.py` (the funnel:
-  mock/cheap/strong tiers gated at each step), `llm_client.py` (real LLM tier, calls the sibling
-  repo's `litellm` Deployment), `mock_llm.py` (default), `ocr_engine.py` (`MockOcrEngine` default,
-  `TesseractOcrEngine` opt-in), `sink_stub.py`, `pdf_utils.py`.
+- `docpipeline/text/` — `pdf_utils.py` (shared by `triage_1.py` and `pdf_worker_2.py`) and
+  `ocr_engine.py` (`MockOcrEngine` default, `TesseractOcrEngine` opt-in; shared by `ocr_shard_3.py`
+  and `fixtures/generate_fixtures.py`). Moved out of `stages/` deliberately — both are helpers used
+  by *multiple* stages (one of them even by fixture-generation code, not a stage at all), not a
+  single stage's own logic, so living next to the 5 numbered sequential-step files made them look
+  like "just another stage" when they aren't one.
+- `docpipeline/stages/` — one module per pipeline stage, five of them numbered by dataflow order
+  as a trailing suffix (`_1` through `_5` — a leading digit isn't a valid Python identifier, so
+  `triage_1.py` not `1_triage.py`; helper modules that aren't independent steps stay unnumbered):
+  `triage_1.py` (ingest + classify + dispatch), `pdf_worker_2.py`/`ocr_shard_3.py` (text
+  production), `extraction_4.py` (the funnel: mock/cheap/strong tiers gated at each step),
+  `llm_client.py` (real LLM tier, calls the sibling repo's `litellm` Deployment; also pushes
+  gate-outcome Scores to Langfuse — see "Langfuse Score integration" below), `mock_llm.py`
+  (default), `sink_stub_5.py`. Every `python -m docpipeline.stages.<name>` invocation
+  (`k8s/values.yaml`'s `services:` list, `local_scripts/run_local.py`'s `SERVICES`) uses the numbered
+  name; every in-repo import uses `from docpipeline.stages import triage_1 as triage` (etc.) so
+  callers' own code bodies never have to change, just the one import line.
 - `docpipeline/reconciliation/` — `sweeper.py` (stuck-state recovery, batch-capped,
-  `SKIP LOCKED`), `orphan_detector.py` (the actual ingest loop — GCS has no bucket-notification
-  wiring locally, so this polls `inbox/` every 10s and *is* the design doc's own recommended
-  fallback, not a deviation), `dlq_replay.py`, `deadmans_switch.py`, `canary.py`, `operator.py`
-  (read-only + break-glass lanes — see "The two operator lanes" below).
+  `SKIP LOCKED`), `orphan_detector_0.py` (numbered as the true step 0 — the actual ingest loop;
+  GCS has no bucket-notification wiring locally, so this polls `inbox/` every 10s and *is* the
+  design doc's own recommended fallback, not a deviation), `dlq_replay.py`, `deadmans_switch.py`,
+  `canary.py`, `operator.py` (read-only + break-glass lanes — see "The two operator lanes" below).
 - `config.py`, `fixture_content.py` — stay top-level, not subpackaged: `config.py` is imported by
   every other module (subpackaging it would just add an import hop with no grouping benefit), and
   `fixture_content.py` is shared fixture text, not pipeline logic.
 - `ansible/site.yml` — the only orchestration layer (see "Ansible task ordering" below). `Makefile`
   targets are thin `ansible-playbook --tags <name>` aliases; there is no bash-script orchestration
-  left (`scripts/reset.sh`/`init_db.sh` were deleted once Ansible fully covered them).
+  left (`local_scripts/reset.sh`/`init_db.sh` were deleted once Ansible fully covered them).
 - `argocd/application.yaml`, `argocd/keda-application.yaml` — the two ArgoCD Applications. See
   "ArgoCD" below for why there are two and why both are still applied via raw `kubectl`.
-- `k8s/` — `configmap.yaml`, `deployments.yaml` (8 Deployments), `keda.yaml` (2 `ScaledObject`s on
-  Kafka consumer lag) — this whole directory is what `docpipeline`'s Application syncs.
-- `scripts/` — `run_local.py` (host-process orchestrator for `make e2e`, has its own SIGTERM
+- `k8s/` — a Helm chart (`Chart.yaml`, `values.yaml`, `templates/`), converted this session from 3
+  flat manifests (`configmap.yaml`, `deployments.yaml`'s 8 near-identical Deployments,
+  `keda.yaml`). `templates/deployment.yaml` is one template `range`d over `values.yaml`'s
+  `services:` list — adding a 9th consumer is a values entry, not a copy-pasted Deployment block.
+  `templates/configmap.yaml`/`templates/infra.yaml`/`templates/jobs.yaml`/`templates/keda.yaml` are
+  similarly values-driven where it matters. ArgoCD detects this as a Helm source automatically
+  (`Chart.yaml`'s presence is the only signal it needs) — no change to `argocd/application.yaml`'s
+  `path: k8s` or to `--local ./k8s` sync required. Helm-rendered output was diffed object-for-object
+  against the original flat manifests before the old files were deleted (byte-identical on all 11
+  objects). This whole directory is what `docpipeline`'s Application syncs — `templates/infra.yaml`
+  (Postgres/Redis/Redpanda/fake-gcs-server, sync-wave `-1`) and `templates/jobs.yaml`
+  (migrate/topics/fixtures one-off Jobs, sync-wave `0`) are part of that same sync now too, not a
+  separate raw-kubectl step — see the "Handoff" section above for the full story and the
+  sync-wave gotcha that came with it.
+- `local_scripts/` — `run_local.py` (host-process orchestrator for `make e2e`, has its own SIGTERM
   handler — see "PID-capture gotcha" below), `wait_for_drain.py`, `create_topics.py`,
   `summarize.py`.
 
@@ -231,7 +195,7 @@ might select it, not just the one you're testing.
 ## PID-capture gotcha: `uv run` does not `exec` into its target
 
 `ansible.builtin.shell`'s pattern for backgrounding `run_local.py` was originally
-`( {{ dotenv_cmd }} exec uv run python3 scripts/run_local.py ) > log 2>&1 & echo $! > pidfile`. This
+`( {{ dotenv_cmd }} exec uv run python3 local_scripts/run_local.py ) > log 2>&1 & echo $! > pidfile`. This
 looks right — `exec` should replace the subshell with the target process so `$!` captures the real
 PID — but `uv run` itself **forks a child and waits** rather than exec'ing into it, so `exec uv run
 ...` only replaces the subshell with `uv`'s own short-lived wrapper. `$!` ends up holding a PID that
@@ -252,8 +216,10 @@ returned ok" without checking `ps` at least once.
 
 ## ArgoCD: both apps, no exceptions but two
 
-Every K8s-manifest deploy in this repo — the 8 app Deployments/ConfigMap/ScaledObjects in `k8s/`,
-*and* the KEDA operator itself — goes through ArgoCD (`argocd app sync <name>`), not raw
+Every K8s-manifest deploy in this repo — the 8 app Deployments, the in-cluster infra
+(Postgres/Redis/Redpanda/fake-gcs-server), Prometheus/Grafana, the setup Jobs, ConfigMap, and
+ScaledObjects, all in `k8s/` — *and* the KEDA operator itself — goes through ArgoCD (`argocd app
+sync <name>`), not raw
 `kubectl apply`/`helm install`. There are exactly two `kubectl`-via-Ansible calls left in the whole
 deploy path, and both are irreducible: applying `argocd/application.yaml` and
 `argocd/keda-application.yaml` themselves. An `Application` object is what *tells* ArgoCD what to
@@ -284,7 +250,7 @@ at all — see "Full cluster rebuild" below; it comes from the sibling repo's ow
 $0 marginal cost) — there is no hosted-API call anywhere in this codebase.
 
 Two different defaults, deliberately: `config.py`'s own fallback is `EXTRACTION_MODE=mock` (so
-host-only `make e2e` stays a ~15s loop with no minikube needed), but `k8s/configmap.yaml` sets
+host-only `make e2e` stays a ~15s loop with no minikube needed), but `k8s/values.yaml`'s `config.EXTRACTION_MODE` sets
 `EXTRACTION_MODE=real` for the in-cluster Deployments — litellm is already reachable there over
 cluster DNS, so there's no reason to fake it once you're actually inside minikube.
 `tests/conftest.py`'s session-scoped `_force_mock_extraction_mode` fixture keeps the pytest suite

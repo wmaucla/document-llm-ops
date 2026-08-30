@@ -40,7 +40,7 @@
         cmd: docker compose up -d
         chdir: "{{ repo_root }}"
       changed_when: true
-      tags: [up, reset, e2e, e2e-k8s]
+      tags: [up, reset, e2e]
 
     - name: Wait for postgres + redpanda to report healthy
       ansible.builtin.command:
@@ -52,7 +52,7 @@
       delay: 1
       changed_when: false
       loop: [postgres, redpanda]
-      tags: [up, reset, e2e, e2e-k8s]
+      tags: [up, reset, e2e]
 
     - name: Stop docker-compose infra
       ansible.builtin.command:
@@ -70,7 +70,7 @@
           -f {{ item }}
       loop: "{{ query('ansible.builtin.fileglob', repo_root + '/migrations/*.sql') | sort }}"
       changed_when: true
-      tags: [init-db, reset, e2e, e2e-k8s]
+      tags: [init-db, reset, e2e]
 
     # ══════════════════════════════════════════════════ reset ══════════
     # Truncate the ledger, clear GCS, recreate Redpanda, flush Redis. Must
@@ -147,11 +147,11 @@
     # (`--tags reset`), always after any redpanda (re)start.
     - name: Create every Kafka topic
       ansible.builtin.shell:
-        cmd: "{{ dotenv_cmd }} uv run python3 scripts/create_topics.py"
+        cmd: "{{ dotenv_cmd }} uv run python3 local_scripts/create_topics.py"
         chdir: "{{ repo_root }}"
         executable: /bin/bash
       changed_when: true
-      tags: [topics, reset, e2e, e2e-k8s]
+      tags: [topics, reset, e2e]
 
     # ══════════════════════════════════════════════════ fixtures ═══════
     - name: Generate + upload the 14 design-doc fixtures
@@ -162,19 +162,11 @@
       changed_when: true
       tags: [fixtures, e2e]
 
-    # e2e-k8s gets a small subset, not all 14 — the real LLM path funnels
-    # through one Ollama pod regardless of extraction replica count, so
-    # draining 14 real-mode documents would take 10+ minutes on its own.
-    # 3 covers tier-0 (digital_clean), OCR-fallback (digital_garbage_text_
-    # layer), and single-shard OCR (one_page_scan) — the full 14 already
-    # get proven correct, fast and free, by make e2e's mock-mode host loop.
-    - name: Generate + upload a small fixture subset for the real-LLM K8s path
-      ansible.builtin.shell:
-        cmd: "{{ dotenv_cmd }} FIXTURE_LIMIT=3 uv run python3 fixtures/generate_fixtures.py"
-        chdir: "{{ repo_root }}"
-        executable: /bin/bash
-      changed_when: true
-      tags: [e2e-k8s]
+    # e2e-k8s's own fixture upload, topic creation, and migrations run
+    # in-cluster (see the new block after the GPU self-heal section below) —
+    # they need the freshly-rebuilt cluster and its in-cluster infra to exist
+    # first, so they can't live here alongside the host-mode fixtures task
+    # above despite doing the conceptually equivalent thing.
 
     # ══════════════════════════════════════════════════ cluster-rebuild ═
     # DESTRUCTIVE: deletes whatever minikube cluster currently exists,
@@ -229,6 +221,75 @@
       changed_when: true
       tags: [cluster-rebuild, e2e-k8s]
 
+    # ══════════════════════════════════════════════════ GPU self-heal ══
+    # Confirmed-live, recurring race (see AGENT.md's "GPU-registration race"):
+    # on a freshly-rebuilt node, the *first* pod anywhere that claims
+    # nvidia.com/gpu can get scheduled with broken device wiring even though
+    # Kubernetes' own resource accounting (device-plugin registration) is
+    # already correct by then. **A plain `nvidia-smi` check is NOT sufficient
+    # to detect this — confirmed live**: ollama's own startup GPU enumeration
+    # and a fresh `kubectl exec nvidia-smi` both reported healthy, then the
+    # *first real inference call* — which spawns a separate `llama-server`
+    # subprocess — failed `ggml_cuda_init` minutes later on the exact same,
+    # non-restarted pod. So this warms the real inference path (not just
+    # nvidia-smi) and checks ollama's own logs for that specific failure
+    # line, which is the only signal proven to actually catch it.
+    # `kubectl delete pod` + reschedule has fixed it every time observed.
+    - name: Wait for ollama to be fully available (models pulled) before testing inference
+      ansible.builtin.command:
+        cmd: kubectl wait --for=condition=available deployment/ollama --timeout=300s
+      changed_when: false
+      tags: [cluster-rebuild, e2e-k8s]
+
+    - name: Warm ollama's real inference path with a trivial generate call
+      ansible.builtin.shell:
+        cmd: |
+          kubectl exec deploy/ollama -- ollama run llama3.2:1b hi
+        executable: /bin/bash
+      changed_when: false
+      tags: [cluster-rebuild, e2e-k8s]
+
+    - name: Check whether that call actually used the GPU (ollama's own logs are the only reliable signal)
+      ansible.builtin.shell:
+        cmd: |
+          kubectl logs deploy/ollama --tail=50 | grep -q "ggml_cuda_init: failed" && echo BROKEN || echo OK
+        executable: /bin/bash
+      register: ollama_gpu_check
+      changed_when: false
+      tags: [cluster-rebuild, e2e-k8s]
+
+    - name: Self-heal the GPU race — delete the ollama pod so it reschedules past the driver-init window
+      ansible.builtin.command:
+        cmd: kubectl delete pod -l app=ollama
+      when: "'BROKEN' in ollama_gpu_check.stdout"
+      changed_when: true
+      tags: [cluster-rebuild, e2e-k8s]
+
+    - name: Wait for the replacement ollama pod to be fully available
+      ansible.builtin.command:
+        cmd: kubectl wait --for=condition=available deployment/ollama --timeout=300s
+      when: "'BROKEN' in ollama_gpu_check.stdout"
+      changed_when: false
+      tags: [cluster-rebuild, e2e-k8s]
+
+    - name: Re-warm the replacement pod's inference path
+      ansible.builtin.shell:
+        cmd: |
+          kubectl exec deploy/ollama -- ollama run llama3.2:1b hi
+        executable: /bin/bash
+      when: "'BROKEN' in ollama_gpu_check.stdout"
+      changed_when: false
+      tags: [cluster-rebuild, e2e-k8s]
+
+    - name: Re-check the replacement pod's logs for the CUDA-init failure — fail loudly here rather than silently limping along on CPU for the whole run
+      ansible.builtin.shell:
+        cmd: |
+          kubectl logs deploy/ollama --tail=50 | grep -qv "ggml_cuda_init: failed" || (echo "still broken after self-heal" >&2 && exit 1)
+        executable: /bin/bash
+      when: "'BROKEN' in ollama_gpu_check.stdout"
+      changed_when: false
+      tags: [cluster-rebuild, e2e-k8s]
+
     # ══════════════════════════════════════════════════ image ══════════
     - name: Build the docpipeline image into minikube's docker daemon
       ansible.builtin.shell:
@@ -241,6 +302,14 @@
       tags: [image, e2e-k8s]
 
     # ══════════════════════════════════════════════════ deploy (ArgoCD) ═
+    # Postgres/Redis/Redpanda/fake-gcs-server (templates/infra.yaml, wave -1)
+    # and the migrate/topics/fixtures setup Jobs (templates/jobs.yaml, wave 0)
+    # are now part of this same Application and this same sync — ArgoCD's
+    # own sync-wave health-gating is what enforces "infra up, then schema/
+    # topics/fixtures exist, then the app tier starts" below, purely via the
+    # "Sync the docpipeline Application" step. No separate raw-kubectl infra
+    # apply or ansible-orchestrated Jobs anymore (there used to be both —
+    # see git history if you need the ansible-driven version back).
     # GitOps end to end. The two Application applies below are the only raw
     # kubectl/k8s-API calls in this play — irreducible, since ArgoCD can't
     # sync the object that tells it what to sync.
@@ -282,9 +351,14 @@
       changed_when: false
       tags: [keda-install, e2e-k8s]
 
+    # --timeout 480: this now blocks through the full sync-wave sequence
+    # (infra healthy -> setup Jobs succeed -> app tier healthy), not just a
+    # flat apply, so it needs real margin instead of the CLI's default of
+    # waiting indefinitely (a stuck wave would otherwise hang this task, and
+    # the whole play, forever with no failure signal).
     - name: Sync the docpipeline Application from the local k8s/ tree
       ansible.builtin.command:
-        cmd: "argocd app sync docpipeline --core --local {{ repo_root }}/k8s"
+        cmd: "argocd app sync docpipeline --core --local {{ repo_root }}/k8s --timeout 480"
       changed_when: true
       tags: [deploy, e2e-k8s]
 
@@ -352,35 +426,40 @@
       tags: [undeploy, never]
 
     # ══════════════════════════════════════════════════ canary / dlq / deadman ═
+    # All three run inside the cluster via kubectl exec into docpipeline-triage
+    # (a stable, always-1-replica, never-KEDA-scaled pod) rather than as host
+    # processes — Postgres/Kafka/GCS are no longer reachable from the host at
+    # all under the in-cluster-infra migration, and none of these three ever
+    # had a real host/mock-mode use case anyway (no `make e2e` equivalent
+    # exists for any of them).
+    #
     # 900s SLO, not the CLI's 60s default: EXTRACTION_MODE=real is the
     # in-cluster default, and a real CPU-only Ollama call's wall-clock time
     # is genuinely host-load-dependent, not just model-size-dependent —
     # confirmed live anywhere from ~150s to 7.5 minutes for a *single* call
-    # depending on what else the host was doing. FIXTURE_LIMIT=3 (see "e2e-k8s
-    # gets a small subset" above) is the real fix for *contention* between
+    # depending on what else the host was doing. FIXTURE_LIMIT=3 (see the
+    # in-cluster fixtures Job above) is the real fix for *contention* between
     # documents; this SLO is separate margin for raw inference speed varying
     # with host load, which no amount of pipeline-side tuning controls.
+    # --extraction-mode real is required, not cosmetic: canary.py can't infer
+    # "am I pointed at a real-mode pipeline" from its own ambient env alone
+    # (confirmed live: without this flag the canary wrongly failed a run that
+    # had actually landed in `review` for legitimate real-model reasons).
     - name: Run the synthetic canary
-      ansible.builtin.shell:
-        cmd: "{{ dotenv_cmd }} uv run python3 -m docpipeline.reconciliation.canary --slo-seconds 900"
-        chdir: "{{ repo_root }}"
-        executable: /bin/bash
+      ansible.builtin.command:
+        cmd: "kubectl exec deploy/docpipeline-triage -- python -m docpipeline.reconciliation.canary --slo-seconds 900 --extraction-mode real"
       changed_when: false
       tags: [canary, e2e-k8s]
 
     - name: Re-drive failed docs whose build_sha/prompt_version changed
-      ansible.builtin.shell:
-        cmd: "{{ dotenv_cmd }} uv run python3 -m docpipeline.reconciliation.dlq_replay"
-        chdir: "{{ repo_root }}"
-        executable: /bin/bash
+      ansible.builtin.command:
+        cmd: "kubectl exec deploy/docpipeline-triage -- python -m docpipeline.reconciliation.dlq_replay"
       changed_when: false
       tags: [dlq-replay]
 
     - name: Check for total silence (dead man's switch)
-      ansible.builtin.shell:
-        cmd: "{{ dotenv_cmd }} uv run python3 -m docpipeline.reconciliation.deadmans_switch"
-        chdir: "{{ repo_root }}"
-        executable: /bin/bash
+      ansible.builtin.command:
+        cmd: "kubectl exec deploy/docpipeline-triage -- python -m docpipeline.reconciliation.deadmans_switch"
       changed_when: false
       tags: [deadmans-switch]
 
@@ -394,7 +473,7 @@
       # (see AGENT.md's PID-capture gotcha).
       ansible.builtin.shell:
         cmd: >
-          ( {{ dotenv_cmd }} exec {{ repo_root }}/.venv/bin/python3 scripts/run_local.py )
+          ( {{ dotenv_cmd }} exec {{ repo_root }}/.venv/bin/python3 local_scripts/run_local.py )
           > /tmp/docpipeline_e2e.log 2>&1 & echo $! > /tmp/docpipeline_e2e.pid
         chdir: "{{ repo_root }}"
         executable: /bin/bash
@@ -408,7 +487,7 @@
 
     - name: Wait for every document to reach a terminal state
       ansible.builtin.shell:
-        cmd: "{{ dotenv_cmd }} uv run python3 scripts/wait_for_drain.py 180"
+        cmd: "{{ dotenv_cmd }} uv run python3 local_scripts/wait_for_drain.py 180"
         chdir: "{{ repo_root }}"
         executable: /bin/bash
       register: drain_result
@@ -450,18 +529,32 @@
 
     # ══════════════════════════════════════════════════ test / summary ═
     # Physically last on purpose — see the note above the e2e section.
-    - name: Print the final per-document summary
+    - name: Print the final per-document summary (host/mock)
       ansible.builtin.shell:
-        cmd: "{{ dotenv_cmd }} uv run python3 scripts/summarize.py"
+        cmd: "{{ dotenv_cmd }} uv run python3 local_scripts/summarize.py"
         chdir: "{{ repo_root }}"
         executable: /bin/bash
       changed_when: false
-      tags: [summary, e2e, e2e-k8s]
+      tags: [summary, e2e]
 
+    # In-cluster equivalent via kubectl exec — see the canary/dlq/deadman
+    # section above for why (Postgres is no longer host-reachable at all).
+    - name: Print the final per-document summary (in-cluster)
+      ansible.builtin.command:
+        cmd: "kubectl exec deploy/docpipeline-triage -- python local_scripts/summarize.py"
+      changed_when: false
+      tags: [e2e-k8s]
+
+    # Mock-mode pytest correctness is already fully proven by make e2e's host
+    # loop above — e2e-k8s only needs to prove the deployment mechanics and
+    # real-LLM path (the canary), not re-run the whole suite. Running it
+    # in-cluster too would mean bundling pytest + tests/ into the image and
+    # wiring a full test session's worth of DB connections through kubectl
+    # exec, for no additional correctness signal.
     - name: Run the pytest suite (mock mode)
       ansible.builtin.shell:
         cmd: "{{ dotenv_cmd }} uv run pytest tests/ -v --timeout=60 -k 'not real_llm'"
         chdir: "{{ repo_root }}"
         executable: /bin/bash
       changed_when: false
-      tags: [test, e2e, e2e-k8s]
+      tags: [test, e2e]

@@ -28,7 +28,7 @@ from reportlab.pdfgen import canvas  # noqa: E402
 
 from docpipeline import fixture_content  # noqa: E402
 from docpipeline.infra import gcs  # noqa: E402
-from docpipeline.stages import ocr_engine  # noqa: E402
+from docpipeline.text import ocr_engine  # noqa: E402
 
 MANIFEST_PATH = Path(__file__).resolve().parent / "generated" / "manifest.json"
 
@@ -114,7 +114,7 @@ def build() -> dict:
     one_page_lines = [
         "GLOBEX TRADING CO", "Invoice No: INV-10001", "Invoice Date: 2026-06-01",
         "Due Date: 2026-07-01", "Seller: Globex Trading Co", "Buyer: Contoso Manufacturing",
-        "Currency: USD", "Line Item: Consulting - 800.00", "Subtotal: 800.00",
+        "Currency: USD", "Line Item: Consulting | 800.00", "Subtotal: 800.00",
         "Tax: 0.00", "Total: 800.00",
     ]
     upload("one_page_scan", blank_pdf(1), "application/pdf", mock_ocr_pages=[join_lines(one_page_lines)])
@@ -122,7 +122,7 @@ def build() -> dict:
     print("3-page scan (forces split + 3 shards + the join):")
     page0 = ["INITECH CORP", "Invoice No: INV-30003", "Invoice Date: 2026-06-10",
              "Due Date: 2026-07-10", "Seller: Initech Corp", "Buyer: Contoso Manufacturing", "Currency: USD"]
-    page1 = ["Line Item: Widget A - 1000.00", "Line Item: Widget B - 500.00"]
+    page1 = ["Line Item: Widget A | 1000.00", "Line Item: Widget B | 500.00"]
     page2 = ["Subtotal: 1500.00", "Tax: 0.00", "Total: 1500.00"]
     upload("three_page_scan", blank_pdf(3), "application/pdf",
            mock_ocr_pages=[join_lines(page0), join_lines(page1), join_lines(page2)])

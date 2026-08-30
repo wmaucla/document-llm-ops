@@ -14,6 +14,7 @@ dependencies = [
   "pydantic>=2.6",
   "reportlab>=4.1",
   "httpx>=0.27",
+  "prometheus-client>=0.20",
 ]
 
 [project.optional-dependencies]

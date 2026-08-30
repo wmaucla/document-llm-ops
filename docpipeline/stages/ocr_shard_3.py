@@ -17,7 +17,7 @@ from pdf2image import convert_from_bytes
 from docpipeline import config
 from docpipeline.core import artifact, ledger
 from docpipeline.infra import gcs, kafka_utils
-from docpipeline.stages import ocr_engine
+from docpipeline.text import ocr_engine
 
 log = logging.getLogger(__name__)
 

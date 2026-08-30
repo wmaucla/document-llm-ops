@@ -1,0 +1,180 @@
+# Postgres/Redis/Redpanda/fake-gcs-server as real pods in this cluster —
+# `make e2e-k8s` only (host-mode `make e2e` still uses docker-compose
+# directly). Wave -1: must be healthy before templates/jobs.yaml (wave 0)
+# and templates/deployment.yaml (wave 1) — ArgoCD's sync-wave ordering
+# blocks the next wave until this one's resources report Healthy, so this
+# is what actually enforces "schema/topics exist before consumers start"
+# now, not ansible. Everything here is fully ArgoCD-owned, synced as part
+# of the same docpipeline Application as the app tier — no raw kubectl
+# apply exception (see AGENT.md's "ArgoCD: both apps, no exceptions but
+# two"; this used to be one, not anymore).
+#
+# emptyDir, not PVCs: nothing needs to survive a pod restart within a run,
+# and `minikube delete` wipes everything every `make e2e-k8s` run anyway.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  labels: {app: postgres}
+  annotations: {argocd.argoproj.io/sync-wave: "-1"}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: postgres}}
+  template:
+    metadata: {labels: {app: postgres}}
+    spec:
+      securityContext:
+        fsGroup: 999  # official postgres image runs as uid/gid 999; emptyDir defaults to root-owned otherwise
+      containers:
+      - name: postgres
+        image: postgres:16
+        env:
+        - {name: POSTGRES_USER, value: postgres}
+        - {name: POSTGRES_PASSWORD, value: postgres}
+        - {name: POSTGRES_DB, value: docpipeline}
+        ports:
+        - containerPort: 5432
+        readinessProbe:
+          exec: {command: ["pg_isready", "-U", "postgres"]}
+          initialDelaySeconds: 5
+          periodSeconds: 3
+          timeoutSeconds: 5
+        volumeMounts:
+        - {name: pgdata, mountPath: /var/lib/postgresql/data}
+      volumes:
+      - {name: pgdata, emptyDir: {}}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  annotations: {argocd.argoproj.io/sync-wave: "-1"}
+spec:
+  selector: {app: postgres}
+  ports:
+  - {port: 5432, targetPort: 5432}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  labels: {app: redis}
+  annotations: {argocd.argoproj.io/sync-wave: "-1"}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: redis}}
+  template:
+    metadata: {labels: {app: redis}}
+    spec:
+      containers:
+      - name: redis
+        image: redis:7-alpine
+        ports:
+        - containerPort: 6379
+        readinessProbe:
+          exec: {command: ["redis-cli", "ping"]}
+          initialDelaySeconds: 3
+          periodSeconds: 3
+          timeoutSeconds: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  annotations: {argocd.argoproj.io/sync-wave: "-1"}
+spec:
+  selector: {app: redis}
+  ports:
+  - {port: 6379, targetPort: 6379}
+---
+# Single PLAINTEXT listener, unlike docker-compose's three (PLAINTEXT/OUTSIDE/
+# PODS): every in-cluster client (docpipeline pods, the wave-0 setup Jobs,
+# and kubectl exec-driven canary/summarize/dlq-replay/deadmans-switch) is on
+# the same cluster network, so one listener advertised at the Service's own
+# DNS name covers everyone.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redpanda
+  labels: {app: redpanda}
+  annotations: {argocd.argoproj.io/sync-wave: "-1"}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: redpanda}}
+  template:
+    metadata: {labels: {app: redpanda}}
+    spec:
+      containers:
+      - name: redpanda
+        image: docker.redpanda.com/redpandadata/redpanda:v24.2.7
+        args:
+          - redpanda
+          - start
+          - --smp=1
+          - --memory=768M
+          - --overprovisioned
+          - --node-id=0
+          - --check=false
+          - --kafka-addr=PLAINTEXT://0.0.0.0:9092
+          - --advertise-kafka-addr=PLAINTEXT://redpanda.default.svc.cluster.local:9092
+        ports:
+        - containerPort: 9092
+        - containerPort: 9644
+        readinessProbe:
+          exec: {command: ["rpk", "cluster", "health", "--exit-when-healthy"]}
+          initialDelaySeconds: 5
+          periodSeconds: 3
+          timeoutSeconds: 5
+          failureThreshold: 20
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redpanda
+  annotations: {argocd.argoproj.io/sync-wave: "-1"}
+spec:
+  selector: {app: redpanda}
+  ports:
+  - {name: kafka, port: 9092, targetPort: 9092}
+  - {name: admin, port: 9644, targetPort: 9644}
+---
+# -public-host/-external-url must be the Service's own DNS name (not
+# localhost, unlike docker-compose) since that's the URL baked into every
+# object's download link that in-cluster clients then follow.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fake-gcs-server
+  labels: {app: fake-gcs-server}
+  annotations: {argocd.argoproj.io/sync-wave: "-1"}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: fake-gcs-server}}
+  template:
+    metadata: {labels: {app: fake-gcs-server}}
+    spec:
+      containers:
+      - name: fake-gcs-server
+        image: fsouza/fake-gcs-server:1.49
+        args:
+          - -scheme=http
+          - -public-host=fake-gcs-server.default.svc.cluster.local:4443
+          - -external-url=http://fake-gcs-server.default.svc.cluster.local:4443
+          - -backend=memory
+        ports:
+        - containerPort: 4443
+        readinessProbe:
+          tcpSocket: {port: 4443}
+          initialDelaySeconds: 3
+          periodSeconds: 3
+          timeoutSeconds: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: fake-gcs-server
+  annotations: {argocd.argoproj.io/sync-wave: "-1"}
+spec:
+  selector: {app: fake-gcs-server}
+  ports:
+  - {port: 4443, targetPort: 4443}

@@ -1,0 +1,97 @@
+# One-off setup Jobs, wave 0 — after infra (wave -1) is healthy, before the
+# app tier (wave 1) starts (schema/topics need to exist first; fixtures
+# don't touch Postgres at all, so they're not a hard dependency of anything,
+# but running them here rather than after the app tier means the app pods
+# have something to discover the moment they start instead of racing the
+# orphan detector's own 10s poll against a still-empty inbox/).
+#
+# ArgoCD owns this ordering, not ansible: sync-wave gating blocks the next
+# wave until this wave's resources report Healthy, and a Job's health check
+# is "Healthy once Succeeded" — so `argocd app sync` genuinely waits for
+# these to finish before the app tier ever gets applied.
+#
+# Fixed names + ttlSecondsAfterFinished: on a `make e2e-k8s` run (always
+# preceded by `minikube delete`) these never collide with a prior run. On a
+# bare re-sync of an existing cluster more than 5 minutes after they last
+# ran, ttl cleanup means ArgoCD will see them as missing and recreate them
+# — re-running migrations/topics/fixtures on an otherwise-routine redeploy.
+# All three are idempotent (migrations, `create_topics.py`'s own docstring,
+# and fixture regeneration are all safe to repeat), so this is wasted work
+# at worst, not a correctness problem.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: docpipeline-migrate
+  annotations: {argocd.argoproj.io/sync-wave: "0"}
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 300
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: migrate
+        image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        envFrom:
+        - configMapRef: {name: {{ .Values.configMapName }}}
+        # Bootstrap admin, not the app's pipeline_rw/pipeline_ro roles --
+        # migrations CREATE those roles, so they can't apply themselves.
+        # Literal env here, not added to docpipeline-config: regular app
+        # pods have no business holding admin credentials.
+        env:
+        - {name: PGUSER, value: postgres}
+        - {name: PGPASSWORD, value: postgres}
+        command:
+          - /bin/sh
+          - -c
+          - >-
+            for f in migrations/*.sql; do
+            psql -v ON_ERROR_STOP=1 -h "$PGHOST" -p "$PGPORT" -U "$PGUSER" -d "$PGDATABASE" -f "$f" || exit 1;
+            done
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: docpipeline-topics
+  annotations: {argocd.argoproj.io/sync-wave: "0"}
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 300
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: topics
+        image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        envFrom:
+        - configMapRef: {name: {{ .Values.configMapName }}}
+        command: ["python", "local_scripts/create_topics.py"]
+---
+# Small subset, not all 14 — the real LLM path funnels through one Ollama
+# pod regardless of extraction replica count, so draining 14 real-mode
+# documents would take 10+ minutes on its own. 3 covers tier-0
+# (digital_clean), OCR-fallback (digital_garbage_text_layer), and
+# single-shard OCR (one_page_scan) — the full 14 already get proven
+# correct, fast and free, by make e2e's mock-mode host loop.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: docpipeline-fixtures
+  annotations: {argocd.argoproj.io/sync-wave: "0"}
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 300
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: fixtures
+        image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        envFrom:
+        - configMapRef: {name: {{ .Values.configMapName }}}
+        env:
+        - {name: FIXTURE_LIMIT, value: "3"}
+        command: ["python", "fixtures/generate_fixtures.py"]

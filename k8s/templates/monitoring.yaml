@@ -1,0 +1,144 @@
+# Lightweight, standalone Prometheus + Grafana — plain Deployments, not the
+# kube-prometheus-stack operator (Prometheus Operator + CRDs + Alertmanager +
+# node-exporter + kube-state-metrics). The sibling mlops-llm-repo explicitly
+# dropped that stack (see its tf/langfuse.tf comment: "tf/monitoring.tf
+# (prometheus/grafana) was dropped from the parent repo's fork to offset
+# [Langfuse's ClickHouse stack] -- the single heaviest addition to the local
+# stack"). Langfuse already covers LLM-call tracing; this covers everything
+# else -- Kafka/Redpanda topic and consumer-group metrics (native
+# /metrics on the admin port, already exposed by templates/infra.yaml's
+# redpanda Service) plus this repo's own custom metrics (currently
+# triage_1.py's TRIAGE_RESULTS counter, exposed via templates/deployment.yaml's
+# per-service metricsPort). Scoped narrowly and kept cheap on purpose, given
+# that documented prior resource-contention concern.
+#
+# Wave -1, alongside the rest of infra: nothing waits on these being healthy
+# (a target being briefly unscrapable before its pod exists in a later wave
+# is normal Prometheus behavior, not a failure), and grouping with infra
+# keeps the wave story simple.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-config
+  annotations: {argocd.argoproj.io/sync-wave: "-1"}
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 15s
+    scrape_configs:
+      - job_name: redpanda
+        metrics_path: /metrics
+        static_configs:
+          - targets: ["redpanda.default.svc.cluster.local:9644"]
+      - job_name: docpipeline-triage
+        static_configs:
+          - targets: ["docpipeline-triage-metrics.default.svc.cluster.local:9100"]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prometheus
+  labels: {app: prometheus}
+  annotations: {argocd.argoproj.io/sync-wave: "-1"}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: prometheus}}
+  template:
+    metadata: {labels: {app: prometheus}}
+    spec:
+      containers:
+      - name: prometheus
+        image: prom/prometheus:v2.53.0
+        args: ["--config.file=/etc/prometheus/prometheus.yml"]
+        ports:
+        - containerPort: 9090
+        resources:
+          requests: {cpu: 50m, memory: 128Mi}
+          limits: {cpu: 200m, memory: 256Mi}
+        volumeMounts:
+        - {name: config, mountPath: /etc/prometheus}
+        readinessProbe:
+          httpGet: {path: /-/ready, port: 9090}
+          initialDelaySeconds: 5
+          periodSeconds: 5
+      volumes:
+      - name: config
+        configMap: {name: prometheus-config}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus
+  annotations: {argocd.argoproj.io/sync-wave: "-1"}
+spec:
+  selector: {app: prometheus}
+  ports:
+  - {port: 9090, targetPort: 9090}
+---
+# Provisioned datasource, no pre-baked dashboard JSON: this is the first
+# session this stack has run against a live cluster, so exact redpanda
+# metric names (topic/consumer-group lag specifically) aren't yet confirmed
+# against real /metrics output -- better to let Grafana's own Explore view
+# and metric autocomplete surface what's actually there than ship a
+# dashboard with panels that silently render "no data" against a guessed
+# metric name. Add a dashboard once the real names are confirmed live.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-datasources
+  annotations: {argocd.argoproj.io/sync-wave: "-1"}
+data:
+  prometheus.yaml: |
+    apiVersion: 1
+    datasources:
+      - name: Prometheus
+        type: prometheus
+        access: proxy
+        url: http://prometheus.default.svc.cluster.local:9090
+        isDefault: true
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grafana
+  labels: {app: grafana}
+  annotations: {argocd.argoproj.io/sync-wave: "-1"}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: grafana}}
+  template:
+    metadata: {labels: {app: grafana}}
+    spec:
+      containers:
+      - name: grafana
+        image: grafana/grafana:11.1.0
+        env:
+        # Hardcoded demo creds -- same convention as postgres/litellm/langfuse
+        # elsewhere in this repo (no secrets manager; see the presentation's
+        # "What's demo-only" appendix).
+        - {name: GF_SECURITY_ADMIN_USER, value: admin}
+        - {name: GF_SECURITY_ADMIN_PASSWORD, value: admin}
+        ports:
+        - containerPort: 3000
+        resources:
+          requests: {cpu: 50m, memory: 128Mi}
+          limits: {cpu: 200m, memory: 256Mi}
+        volumeMounts:
+        - {name: datasources, mountPath: /etc/grafana/provisioning/datasources}
+        readinessProbe:
+          httpGet: {path: /api/health, port: 3000}
+          initialDelaySeconds: 5
+          periodSeconds: 5
+      volumes:
+      - name: datasources
+        configMap: {name: grafana-datasources}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: grafana
+  annotations: {argocd.argoproj.io/sync-wave: "-1"}
+spec:
+  selector: {app: grafana}
+  ports:
+  - {port: 3000, targetPort: 3000}

@@ -4,12 +4,12 @@ a real component, not a stub'.
 """
 
 from docpipeline.core import artifact, ledger
-from docpipeline.stages import extraction, mock_llm
+from docpipeline.stages import extraction_4 as extraction, mock_llm
 from tests.conftest import insert_document
 
 CLEAN_TEXT = (
     "Invoice No: INV-1\nSeller: Acme\nBuyer: Contoso\n"
-    "Line Item: Widget - 100.00\nSubtotal: 100.00\nTax: 0.00\nTotal: 100.00\n"
+    "Line Item: Widget | 100.00\nSubtotal: 100.00\nTax: 0.00\nTotal: 100.00\n"
 )
 
 

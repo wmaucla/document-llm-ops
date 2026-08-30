@@ -13,7 +13,7 @@ import os
 
 import pytest
 
-from docpipeline.stages import extraction, llm_client
+from docpipeline.stages import extraction_4 as extraction, llm_client
 from tests.conftest import insert_document
 
 pytestmark = pytest.mark.skipif(
@@ -23,7 +23,7 @@ pytestmark = pytest.mark.skipif(
 
 CLEAN_TEXT = (
     "Invoice No: INV-REAL-1\nSeller: Acme\nBuyer: Contoso\n"
-    "Line Item: Widget - 100.00\nSubtotal: 100.00\nTax: 0.00\nTotal: 100.00\n"
+    "Line Item: Widget | 100.00\nSubtotal: 100.00\nTax: 0.00\nTotal: 100.00\n"
 )
 
 

@@ -35,7 +35,8 @@ help:
 	@echo "make deadmans-switch  check for total silence (exits 1 if unhealthy)"
 	@echo "make e2e           fast end-to-end run: reset -> fixtures -> host consumers -> test"
 	@echo "make e2e-k8s       full end-to-end run: DESTROYS + rebuilds the whole minikube cluster,"
-	@echo "                   then reset -> fixtures -> image -> ArgoCD deploy -> canary (~10-15 min)"
+	@echo "                   then image -> ArgoCD deploy (in-cluster infra, migrate/topics/fixtures"
+	@echo "                   Jobs, app tier, KEDA, monitoring, all one sync) -> canary (~15-20 min)"
 
 install:
 	uv sync --extra dev
@@ -59,7 +60,7 @@ fixtures:
 	$(ANSIBLE) --tags fixtures
 
 run-local:
-	set -a && . ./.env && set +a && uv run python3 scripts/run_local.py
+	set -a && . ./.env && set +a && uv run python3 local_scripts/run_local.py
 
 test:
 	set -a && . ./.env && set +a && uv run pytest tests/ -v --timeout=60 -k "not real_llm"
@@ -103,5 +104,10 @@ summary:
 e2e:
 	$(ANSIBLE) --tags reset,e2e
 
+# No `reset` tag here (unlike e2e): those tasks target docker-compose's
+# host infra, which e2e-k8s no longer uses at all. cluster-rebuild's
+# `minikube delete` + fresh in-cluster postgres/redis/redpanda/fake-gcs-server
+# pods (see k8s/templates/infra.yaml) already guarantee empty state every
+# run — a stronger reset than truncate/flush ever was.
 e2e-k8s:
-	$(ANSIBLE) --tags cluster-rebuild,reset,image,keda-install,deploy,e2e-k8s
+	$(ANSIBLE) --tags cluster-rebuild,image,keda-install,deploy,e2e-k8s

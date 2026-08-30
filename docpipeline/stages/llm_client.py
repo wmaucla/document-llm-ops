@@ -1,23 +1,39 @@
 """Step 8's real LLM tier — calls the existing LiteLLM gateway (the sibling
 mlops-llm-repo's `litellm` Deployment, already wired to Langfuse server-side
 via `success_callback: ["langfuse"]` — every request through it is
-auto-traced with no SDK calls needed here).
+auto-traced with no SDK calls needed for the trace itself).
 
 Raises `mock_llm.ExtractionError` with the same `kind` values the mock uses,
 so `extraction.run_funnel`'s tier loop handles the mock and real paths
 through one code path — see 'Producers cascade, exactly like model tiers'
 for why that unification matters.
+
+`extract()` passes `doc_id` as `metadata.trace_id` on every call, so every
+tier/repair attempt for one document lands on the *same* Langfuse trace
+(litellm forwards `metadata.trace_id` straight through to its Langfuse
+callback). `push_gate_scores()` then attaches this repo's own deterministic
+gate outcomes to that trace as Scores once `extraction.py` knows the final
+result — Langfuse's tracing alone only shows what the model said, not
+whether this repo's gates trusted it.
 """
 
 from __future__ import annotations
 
 import json
+import logging
 import re
 
 import httpx
 
 from docpipeline import config
 from docpipeline.stages.mock_llm import ExtractionError
+
+log = logging.getLogger(__name__)
+
+# Gate outcome -> Langfuse numeric score. not_applicable gates (e.g. iban_mod97
+# on a non-IBAN document) carry no signal about model quality, so they're
+# skipped rather than scored as some arbitrary middle value.
+_OUTCOME_SCORE = {"pass": 1.0, "fail": 0.0, "inconclusive": 0.5}
 
 EXTRACTION_PROMPT = """You extract structured invoice data as JSON only, no prose.
 
@@ -51,7 +67,7 @@ def _extract_json(raw: str) -> dict:
         raise ExtractionError("unparseable", f"{exc}: {raw[:500]}") from exc
 
 
-def extract(tier: str, source_text: str, repair_hint: str | None = None) -> dict:
+def extract(doc_id: str, tier: str, source_text: str, repair_hint: str | None = None) -> dict:
     model = config.LITELLM_TIER_MODELS[tier]
     prompt = EXTRACTION_PROMPT.format(text=source_text)
     if repair_hint:
@@ -65,6 +81,10 @@ def extract(tier: str, source_text: str, repair_hint: str | None = None) -> dict
                 "model": model,
                 "messages": [{"role": "user", "content": prompt}],
                 "temperature": 0,  # minimise divergence — see '4 · Retry divergence'
+                # Same doc_id across every tier/repair attempt for this
+                # document -> litellm's Langfuse callback groups them onto
+                # one trace instead of a new trace per call.
+                "metadata": {"trace_id": doc_id},
             },
             timeout=config.LITELLM_TIMEOUT_SECONDS,
         )
@@ -87,3 +107,31 @@ def extract(tier: str, source_text: str, repair_hint: str | None = None) -> dict
         raise ExtractionError("refusal", "empty completion")
 
     return _extract_json(content)
+
+
+def push_gate_scores(doc_id: str, gate_results: dict) -> None:
+    """Attaches this document's final gate outcomes to its Langfuse trace
+    (same `doc_id`, set as `metadata.trace_id` on every `extract()` call
+    above) as one Score per gate. Real mode only -- mock mode never calls
+    litellm/Langfuse, so there's no trace to attach anything to. Best-effort:
+    a Langfuse outage must never fail extraction, so failures are logged and
+    swallowed, not raised.
+    """
+    if config.EXTRACTION_MODE != "real":
+        return
+    for gate_name, result in gate_results.items():
+        if not isinstance(result, dict):
+            continue  # e.g. "tier_used": "strong" — not a gate result
+        value = _OUTCOME_SCORE.get(result.get("outcome"))
+        if value is None:
+            continue  # not_applicable, or an unrecognized outcome
+        try:
+            resp = httpx.post(
+                f"{config.LANGFUSE_HOST}/api/public/scores",
+                auth=(config.LANGFUSE_PUBLIC_KEY, config.LANGFUSE_SECRET_KEY),
+                json={"traceId": doc_id, "name": gate_name, "value": value, "dataType": "NUMERIC"},
+                timeout=5,
+            )
+            resp.raise_for_status()  # a 401/400 doesn't raise on its own -- would fail silently otherwise
+        except httpx.HTTPError as exc:
+            log.warning("langfuse score push failed for %s/%s: %s", doc_id, gate_name, exc)

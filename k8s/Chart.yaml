@@ -1,0 +1,9 @@
+apiVersion: v2
+name: docpipeline
+description: >-
+  document-llm-ops pipeline services — one Deployment per consumer group,
+  the shared ConfigMap, and the two KEDA ScaledObjects. Synced by ArgoCD's
+  docpipeline Application (see ../argocd/application.yaml); ArgoCD detects
+  this as a Helm source purely from this file's presence, no source-type
+  change needed there.
+version: 0.1.0

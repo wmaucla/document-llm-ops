@@ -1,0 +1,158 @@
+# image is built locally into minikube's docker daemon (`make image`), never
+# pulled — imagePullPolicy: Never.
+image:
+  repository: docpipeline
+  tag: latest
+  pullPolicy: Never
+
+configMapName: docpipeline-config
+
+# Every consumer's env — see the design doc's "Topics vs deployments": topics
+# are cheap, deployments cost ops. This ConfigMap is what turns the same
+# docpipeline image into 8 different single-purpose Deployments below.
+#
+# Postgres/Redpanda/fake-gcs-server/Redis run purely in-cluster
+# (templates/infra.yaml, wave -1 — same ArgoCD Application as everything
+# else here, no raw-kubectl exception), reached by normal cluster DNS.
+# This is `make e2e-k8s`-only: host-mode `make e2e` still uses
+# docker-compose directly (see the repo README's "Tool substitutions"
+# deviation) — the two paths no longer share any infrastructure or a single
+# ledger, unlike before this migration. litellm/langfuse are the sibling
+# mlops-llm-repo's own in-cluster stack, also reached by normal cluster DNS.
+config:
+  PGHOST: "postgres.default.svc.cluster.local"
+  PGPORT: "5432"
+  PGDATABASE: "docpipeline"
+  PIPELINE_RW_USER: "pipeline_rw"
+  PIPELINE_RW_PASSWORD: "pipeline_rw_pw"
+  PIPELINE_RO_USER: "pipeline_ro"
+  PIPELINE_RO_PASSWORD: "pipeline_ro_pw"
+
+  KAFKA_BOOTSTRAP_SERVERS: "redpanda.default.svc.cluster.local:9092"
+
+  STORAGE_EMULATOR_HOST: "http://fake-gcs-server.default.svc.cluster.local:4443"
+  GCS_BUCKET: "docpipeline-local"
+  GOOGLE_CLOUD_PROJECT: "local-project"
+
+  REDIS_URL: "redis://redis.default.svc.cluster.local:6379/0"
+
+  OCR_ENGINE: "mock"
+  OCR_DPI: "150"
+
+  SHARD_SIZE_PAGES: "1"
+  HARD_PAGE_CEILING: "20"
+  SWEEPER_BATCH_CAP: "5"
+  SWEEPER_CADENCE_SECONDS: "30"
+  STUCK_THRESHOLD_SECONDS: "30"
+  RELAY_POLL_SECONDS: "2"
+  RELAY_BATCH_CAP: "50"
+  ORPHAN_DETECTOR_INTERVAL_SECONDS: "10"
+
+  # Real in-cluster (litellm's reachable via DNS here); make e2e (host-only)
+  # still defaults to mock in config.py for its fast ~15s loop. Flip back:
+  #   kubectl set env deployment/docpipeline-extraction EXTRACTION_MODE=mock
+  EXTRACTION_MODE: "real"
+  LITELLM_BASE_URL: "http://litellm.default.svc.cluster.local:4000"
+  LITELLM_MASTER_KEY: "sk-demo-key"
+
+  # Same demo keys mlops-llm-repo/k8s/litellm.yaml already uses server-side
+  # (same Langfuse project) — llm_client.push_gate_scores() attaches this
+  # repo's own gate outcomes to the trace litellm already created.
+  LANGFUSE_HOST: "http://langfuse-web.langfuse.svc.cluster.local:3000"
+  LANGFUSE_PUBLIC_KEY: "pk-lf-demo-local-0000"
+  LANGFUSE_SECRET_KEY: "sk-lf-demo-local-0000"
+
+# One Deployment per consumer group — see the design doc's "Complete topic
+# list" and "Topics vs deployments". `name` becomes the Deployment/container
+# name as docpipeline-<name>, so it must match the label selectors ansible's
+# docpipeline_apps var and keda.yaml's scaleTargetRefs already expect.
+services:
+  - name: triage
+    command: ["python", "-m", "docpipeline.stages.triage_1"]
+    replicas: 1
+    resources:
+      requests: {cpu: 50m, memory: 128Mi}
+      limits: {cpu: 200m, memory: 256Mi}
+    # triage_1.py's TRIAGE_RESULTS counter — scraped by templates/monitoring.yaml's
+    # Prometheus, one counter labeled by classification (dispatched, and every
+    # zero_byte/unsupported_mime/encrypted/corrupt/page_ceiling/duplicate/not_found
+    # failure reason), not one metric per failure mode.
+    metricsPort: 9100
+
+  - name: pdf-worker
+    command: ["python", "-m", "docpipeline.stages.pdf_worker_2"]
+    replicas: 1
+    resources:
+      requests: {cpu: 100m, memory: 256Mi}
+      limits: {cpu: 500m, memory: 512Mi}
+
+  # The ~900 CPU fleet in production, sized separately from pdf-worker for
+  # exactly the reason the design doc gives — see "Why not collapse further".
+  # KEDA scales this one on ocr.shard consumer lag (see keda section below).
+  - name: ocr-shard
+    command: ["python", "-m", "docpipeline.stages.ocr_shard_3"]
+    replicas: 1
+    resources:
+      requests: {cpu: 100m, memory: 128Mi}
+      limits: {cpu: 200m, memory: 256Mi}
+
+  # KEDA scales this one on ocr.completed consumer lag (see keda section below).
+  - name: extraction
+    command: ["python", "-m", "docpipeline.stages.extraction_4"]
+    replicas: 1
+    resources:
+      requests: {cpu: 100m, memory: 128Mi}
+      limits: {cpu: 500m, memory: 256Mi}
+
+  - name: sink-stub
+    command: ["python", "-m", "docpipeline.stages.sink_stub_5"]
+    replicas: 1
+    resources:
+      requests: {cpu: 25m, memory: 64Mi}
+      limits: {cpu: 100m, memory: 128Mi}
+
+  # Fixed 2+ replicas, safe concurrently via SKIP LOCKED — see "Plus
+  # outbox-relay, which sits outside that [scaling] table because it scales
+  # on neither axis". On the critical path for every message; a
+  # PodDisruptionBudget would matter at real scale, skipped here.
+  - name: outbox-relay
+    command: ["python", "-m", "docpipeline.core.outbox"]
+    replicas: 2
+    resources:
+      requests: {cpu: 25m, memory: 64Mi}
+      limits: {cpu: 100m, memory: 128Mi}
+
+  - name: sweeper
+    command: ["python", "-m", "docpipeline.reconciliation.sweeper"]
+    replicas: 1
+    resources:
+      requests: {cpu: 25m, memory: 64Mi}
+      limits: {cpu: 100m, memory: 128Mi}
+
+  # Locally, this *is* the ingest path — see "Locally, the orphan detector is
+  # the ingest path" (fake-gcs-server has no bucket-notification wiring).
+  - name: orphan-detector
+    command: ["python", "-m", "docpipeline.reconciliation.orphan_detector_0"]
+    replicas: 1
+    resources:
+      requests: {cpu: 25m, memory: 64Mi}
+      limits: {cpu: 100m, memory: 128Mi}
+
+# Scales the two deployments the design doc calls out: ocr-shard (~900 CPU
+# fleet in prod) and extraction (token-quota bound in prod). lagThreshold: "1"
+# is artificially low so a local burst actually demonstrates scale-up.
+keda:
+  kafkaBootstrapServers: "redpanda.default.svc.cluster.local:9092"
+  scaledObjects:
+    - name: ocr-shard
+      target: docpipeline-ocr-shard
+      minReplicaCount: 1
+      maxReplicaCount: 5
+      consumerGroup: ocr-shard
+      topic: ocr.shard
+    - name: extraction
+      target: docpipeline-extraction
+      minReplicaCount: 1
+      maxReplicaCount: 3
+      consumerGroup: extraction
+      topic: ocr.completed

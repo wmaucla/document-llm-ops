@@ -1,0 +1,45 @@
+{{- range .Values.services }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: docpipeline-{{ .name }}
+  labels: {app: docpipeline-{{ .name }}}
+  # Wave 1: after infra (wave -1) is healthy and migrate/topics/fixtures
+  # (wave 0) have succeeded — schema and topics must exist before these
+  # start. See templates/infra.yaml and templates/jobs.yaml.
+  annotations: {argocd.argoproj.io/sync-wave: "1"}
+spec:
+  replicas: {{ .replicas }}
+  selector: {matchLabels: {app: docpipeline-{{ .name }}}}
+  template:
+    metadata: {labels: {app: docpipeline-{{ .name }}}}
+    spec:
+      containers:
+      - name: {{ .name }}
+        image: "{{ $.Values.image.repository }}:{{ $.Values.image.tag }}"
+        imagePullPolicy: {{ $.Values.image.pullPolicy }}
+        command: {{ .command | toJson }}
+        envFrom: [{configMapRef: {name: {{ $.Values.configMapName }}}}]
+        resources:
+          requests: {{ .resources.requests | toJson }}
+          limits: {{ .resources.limits | toJson }}
+        {{- if .metricsPort }}
+        ports:
+        - {containerPort: {{ .metricsPort }}, name: metrics}
+        {{- end }}
+{{- if .metricsPort }}
+---
+# Stable DNS name for Prometheus to scrape (templates/monitoring.yaml) — the
+# Deployment alone gives every replica its own pod IP, not a fixed address.
+apiVersion: v1
+kind: Service
+metadata:
+  name: docpipeline-{{ .name }}-metrics
+  annotations: {argocd.argoproj.io/sync-wave: "1"}
+spec:
+  selector: {app: docpipeline-{{ .name }}}
+  ports:
+  - {port: {{ .metricsPort }}, targetPort: {{ .metricsPort }}, name: metrics}
+{{- end }}
+---
+{{- end }}

@@ -7,6 +7,7 @@ Ctrl-C stops everything cleanly.
 """
 from __future__ import annotations
 
+import os
 import signal
 import subprocess
 import sys
@@ -18,17 +19,24 @@ LOG_DIR = REPO_ROOT / "logs"
 
 SERVICES = [
     "docpipeline.core.outbox",
-    "docpipeline.reconciliation.orphan_detector",
+    "docpipeline.reconciliation.orphan_detector_0",
     "docpipeline.reconciliation.sweeper",
-    "docpipeline.stages.triage",
-    "docpipeline.stages.pdf_worker",
-    "docpipeline.stages.ocr_shard",
-    "docpipeline.stages.extraction",
-    "docpipeline.stages.sink_stub",
+    "docpipeline.stages.triage_1",
+    "docpipeline.stages.pdf_worker_2",
+    "docpipeline.stages.ocr_shard_3",
+    "docpipeline.stages.extraction_4",
+    "docpipeline.stages.sink_stub_5",
 ]
 
 
 def main() -> None:
+    # ansible/site.yml's stop task backgrounds this script with plain `&` in a
+    # non-interactive bash (no job control), so it inherits that shell's process
+    # group instead of leading its own -- `kill -9 -- "-$(cat pidfile)"` (this
+    # PID as a process group) then targets a group this process was never the
+    # leader of and silently kills nothing. Becoming our own group leader before
+    # spawning any children makes that process-group kill actually work.
+    os.setpgrp()
     LOG_DIR.mkdir(exist_ok=True)
     procs: list[subprocess.Popen] = []
     log_files = []

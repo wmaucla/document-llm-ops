@@ -102,13 +102,24 @@ PLAUSIBLE_TOTAL_CEILING_CENTS = _int("PLAUSIBLE_TOTAL_CEILING_CENTS", 10_000_000
 
 # --- Step 8: real LLM tier, behind the same LiteLLM gateway the sibling
 # mlops-llm-repo already runs (already Langfuse-wired server-side — every
-# request through it is auto-traced, no SDK calls needed here). "mock" keeps
-# the deterministic path from steps 0-7; "real" swaps in docpipeline.llm_client.
+# request through it is auto-traced with no SDK calls needed for the trace
+# itself). "mock" keeps the deterministic path from steps 0-7; "real" swaps
+# in docpipeline.llm_client.
 EXTRACTION_MODE = os.environ.get("EXTRACTION_MODE", "mock")  # mock | real
 LITELLM_BASE_URL = os.environ.get("LITELLM_BASE_URL", "http://localhost:4000")
 LITELLM_MASTER_KEY = os.environ.get("LITELLM_MASTER_KEY", "sk-demo-key")
 LITELLM_TIER_MODELS = {"cheap": "cheap-fast", "strong": "cheap-balanced"}
 LITELLM_TIMEOUT_SECONDS = _float("LITELLM_TIMEOUT_SECONDS", 200.0)  # small CPU model under load is slow, not hung
+
+# llm_client.extract() passes doc_id as metadata.trace_id on every LiteLLM
+# call, so litellm's own Langfuse callback lands every tier/repair attempt
+# for one document on one trace. These three let docpipeline push its own
+# gate-outcome Scores onto that same trace afterward (see
+# llm_client.push_gate_scores) -- same demo keys mlops-llm-repo/k8s/litellm.yaml
+# already uses server-side, since they're the same Langfuse project.
+LANGFUSE_HOST = os.environ.get("LANGFUSE_HOST", "http://localhost:3001")
+LANGFUSE_PUBLIC_KEY = os.environ.get("LANGFUSE_PUBLIC_KEY", "pk-lf-demo-local-0000")
+LANGFUSE_SECRET_KEY = os.environ.get("LANGFUSE_SECRET_KEY", "sk-lf-demo-local-0000")
 
 # --- Step 9: reconciliation extras ---
 DEADMANS_SWITCH_WINDOW_SECONDS = _int("DEADMANS_SWITCH_WINDOW_SECONDS", 900)  # prod: 15 min

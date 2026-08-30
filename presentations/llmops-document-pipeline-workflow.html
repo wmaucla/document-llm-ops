@@ -117,8 +117,8 @@ html,body{margin:0;background:var(--bg);color:var(--ink);
 .ask b{color:#fff;}
 
 /* ── architecture scene ── */
-.scene{display:grid;grid-template-columns:minmax(0,0.85fr) minmax(0,1.35fr);
-  max-width:1600px;margin:0 auto;}
+.scene{display:grid;grid-template-columns:minmax(0,0.6fr) minmax(0,1.6fr);
+  max-width:1900px;margin:0 auto;}
 .prose{padding:0 3vw 0 6vw;}
 .step{min-height:78vh;display:flex;flex-direction:column;justify-content:center;
   padding:6vh 0;opacity:.3;transition:opacity .4s ease;}
@@ -237,7 +237,7 @@ footer.close a{color:var(--ink-dim);}
 <!-- ══════════════════════ WHAT WE BUILT ══════════════════════ -->
 <section class="section" id="built">
   <div class="eyebrow">What we built</div>
-  <h2>Steps 0-10 of the design doc's own build order</h2>
+  <h2>The full pipeline, correctness core through operations</h2>
   <p class="lede">Every piece below is live-verified against real infra -- not mocked out for the demo.<span class="ref" data-jump="apx-a1">A1</span></p>
   <div class="rows">
     <div class="row reveal" style="--i:0"><svg class="ic-row c-blue" viewBox="0 0 20 20"><use href="#ic-cylinder"/></svg><span class="pill p-blue">Postgres ledger</span><span class="desc">A real state machine with a guarded <span class="mono-inline" style="font-size:.95em">transition()</span> -- illegal moves raise loudly instead of silently corrupting state.</span></div>
@@ -267,12 +267,12 @@ footer.close a{color:var(--ink-dim);}
     <div class="step" data-step="2">
       <div class="step-eyebrow">02 &middot; Ingest</div>
       <h3>The orphan detector *is* the ingest path</h3>
-      <p>Locally, fake-gcs-server has no bucket-notification wiring -- so a 10s polling loop that finds new objects under <span class="mono-inline" style="font-size:.95em">inbox/</span> is the design doc's own recommended fallback, not a shortcut. Triage classifies and creates the one ledger row.</p>
+      <p>Locally, fake-gcs-server has no bucket-notification wiring -- so a 10s polling loop that finds new objects under <span class="mono-inline" style="font-size:.95em">inbox/</span> is the deliberate, correct approach here, not a shortcut. Triage does two passes: reject zero-byte/unsupported/encrypted/corrupt/oversized uploads outright, then classify what's left (doc type, has-a-text-layer) and write the one ledger row -- ledger row and outbox row, same transaction, always.</p>
     </div>
     <div class="step" data-step="3">
       <div class="step-eyebrow">03 &middot; Fan out, then rejoin</div>
       <h3>Scatter-gather, without a lost-join hazard</h3>
-      <p>Large scans split into page-range shards that OCR in parallel. The join that detects "all shards done" is a single guarded <span class="mono-inline" style="font-size:.95em">UPDATE ... RETURNING</span> under the parent row's lock -- the winning shard publishes; it does not reassemble.</p>
+      <p>Two hops, not one: the PDF worker does tier-0 text extraction if there's already a text layer, otherwise it physically splits the scan into page-range shards; the OCR shard workers -- a separate, KEDA-scaled deployment -- actually rasterize and OCR each shard, independently and in parallel. The join that detects "all shards done" is a single guarded <span class="mono-inline" style="font-size:.95em">UPDATE ... RETURNING</span> under the parent row's lock -- the winning shard publishes; it does not reassemble.</p>
     </div>
     <div class="step" data-step="4">
       <div class="step-eyebrow">04 &middot; Extraction funnel</div>
@@ -296,8 +296,8 @@ footer.close a{color:var(--ink-dim);}
         <div class="lg"><span class="sw d-gate"></span>KEDA autoscale &middot; async</div>
         <div class="lg"><span class="sw d-async"></span>reconciliation &middot; async</div>
       </div>
-      <svg id="archSvg" viewBox="0 0 760 460" preserveAspectRatio="xMidYMid meet" role="img"
-           aria-label="Architecture diagram. Two external boxes sit above a large Kubernetes cluster boundary: Ansible plus ArgoCD, which provisions and deploys everything, and 14 fixture PDFs feeding in from outside as the upload source. Inside the cluster, top to bottom: an ingest band with the orphan detector, triage, and the Postgres ledger; a fan-out and join band with the PDF worker, OCR shard workers, and the scatter-gather join, annotated with a KEDA autoscale badge; an extraction band with the extraction funnel, five quality gates, and the outbox feeding a sink; and a dashed reconciliation band underneath with the sweeper, DLQ replay, dead man's switch, and a synthetic canary.">
+      <svg id="archSvg" viewBox="0 0 1000 300" preserveAspectRatio="xMidYMid meet" role="img"
+           aria-label="Architecture diagram, wide layout. Two external boxes sit above a large Kubernetes cluster boundary: Ansible plus ArgoCD, which provisions and deploys everything, and 14 fixture PDFs feeding in from outside as the upload source. Inside the cluster, one wide row runs ingest through join left to right: orphan detector, triage, Postgres ledger, PDF worker, OCR shard workers (shown as a stack of replicas, KEDA-scaled 1 to 5), and the scatter-gather join. The PDF worker is a fork point: documents with an existing text layer skip straight down to the extraction funnel on tier 0; documents needing OCR go right to the OCR shard workers and the join, which then also feeds down into the extraction funnel. A second row holds the extraction funnel (shown as a stack of replicas, KEDA-scaled 1 to 3), five quality gates, and the outbox to sink (shown as a fixed stack of 2 replicas). A dashed reconciliation strip runs underneath with the sweeper, DLQ replay, dead man's switch, and a synthetic canary.">
         <defs>
           <marker id="a-g" markerWidth="8" markerHeight="8" refX="6.2" refY="4" orient="auto">
             <path d="M0.5,1 L6.5,4 L0.5,7" fill="none" stroke="rgba(255,255,255,.55)" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
@@ -361,125 +361,127 @@ footer.close a{color:var(--ink-dim);}
           <symbol id="ic-split" viewBox="0 0 20 20">
             <path d="M10 2 V8"/><path d="M10 8 L4 18"/><path d="M10 8 L16 18"/><circle class="ic-fill" cx="10" cy="8" r="1"/>
           </symbol>
+          <symbol id="ic-branch" viewBox="0 0 20 20">
+            <circle cx="5" cy="4" r="2"/><circle cx="5" cy="16" r="2"/><circle cx="15" cy="10" r="2"/>
+            <path d="M5 6 V14"/><path d="M5 10 H13"/>
+          </symbol>
         </defs>
 
         <!-- ── edges (behind nodes) ── -->
-        <line data-key="edgeAnsibleCluster" x1="155" y1="62" x2="155" y2="76" stroke="rgba(148,163,184,.6)" stroke-width="1.6" stroke-dasharray="4 3" stroke-linecap="round" marker-end="url(#a-g)"/>
-        <path data-key="edgeFixturesOrphan" d="M 585 62 L 585 92 L 340 92 L 340 122" fill="none" stroke="rgba(148,163,184,.6)" stroke-width="1.6" stroke-dasharray="4 3" stroke-linecap="round" marker-end="url(#a-g)"/>
-        <line data-key="edgeOrphanTriage" x1="230" y1="156" x2="250" y2="156" stroke="rgba(255,255,255,.4)" stroke-width="1.6" stroke-linecap="round" marker-end="url(#a-g)"/>
-        <line data-key="edgeTriageLedger" x1="430" y1="156" x2="450" y2="156" stroke="rgba(255,255,255,.4)" stroke-width="1.6" stroke-linecap="round" marker-end="url(#a-g)"/>
-        <line data-key="edgeLedgerPdf" x1="565" y1="196" x2="565" y2="212" stroke="rgba(255,255,255,.4)" stroke-width="1.6" stroke-linecap="round" marker-end="url(#a-g)"/>
-        <path data-key="edgeLedgerPdf" d="M 565 212 L 130 212 L 130 224" fill="none" stroke="rgba(255,255,255,.4)" stroke-width="1.6" stroke-linecap="round" marker-end="url(#a-g)"/>
-        <line data-key="edgePdfOcr" x1="220" y1="256" x2="240" y2="256" stroke="rgba(255,255,255,.4)" stroke-width="1.6" stroke-linecap="round" marker-end="url(#a-g)"/>
-        <line data-key="edgeOcrJoin" x1="400" y1="256" x2="420" y2="256" stroke="rgba(255,255,255,.4)" stroke-width="1.6" stroke-linecap="round" marker-end="url(#a-g)"/>
-        <g data-key="edgeKeda">
-          <path d="M 320 224 L 320 200 L 660 200 L 660 224" fill="none" stroke="#FBBF24" stroke-width="1.6" stroke-dasharray="4 3" stroke-linecap="round" marker-end="url(#a-amber)"/>
-          <text x="490" y="196" text-anchor="middle" font-size="9" font-weight="700" fill="#FBBF24">KEDA &middot; scales on Kafka lag</text>
+        <line data-key="edgeAnsibleCluster" x1="120" y1="40" x2="120" y2="46" stroke="rgba(148,163,184,.6)" stroke-width="1.6" stroke-dasharray="4 3" stroke-linecap="round" marker-end="url(#a-g)"/>
+        <path data-key="edgeFixturesOrphan" d="M 880 40 L 880 58 L 89 58 L 89 74" fill="none" stroke="rgba(148,163,184,.6)" stroke-width="1.6" stroke-dasharray="4 3" stroke-linecap="round" marker-end="url(#a-g)"/>
+        <line data-key="edgeOrphanTriage" x1="154" y1="105" x2="168" y2="105" stroke="rgba(255,255,255,.4)" stroke-width="1.6" stroke-linecap="round" marker-end="url(#a-g)"/>
+        <line data-key="edgeTriageLedger" x1="278" y1="105" x2="292" y2="105" stroke="rgba(255,255,255,.4)" stroke-width="1.6" stroke-linecap="round" marker-end="url(#a-g)"/>
+        <line data-key="edgeLedgerPdf" x1="432" y1="105" x2="446" y2="105" stroke="rgba(255,255,255,.4)" stroke-width="1.6" stroke-linecap="round" marker-end="url(#a-g)"/>
+        <line data-key="edgePdfOcr" x1="586" y1="105" x2="600" y2="105" stroke="rgba(255,255,255,.4)" stroke-width="1.6" stroke-linecap="round" marker-end="url(#a-g)"/>
+        <line data-key="edgeOcrJoin" x1="725" y1="105" x2="739" y2="105" stroke="rgba(255,255,255,.4)" stroke-width="1.6" stroke-linecap="round" marker-end="url(#a-g)"/>
+        <g data-key="edgePdfFunnel">
+          <path d="M 476 136 L 476 145 L 100 145 L 100 168" fill="none" stroke="#FBBF24" stroke-width="1.6" stroke-dasharray="4 3" stroke-linecap="round" marker-end="url(#a-amber)"/>
+          <text x="288" y="142" text-anchor="middle" font-size="7.5" font-weight="700" fill="#FBBF24">tier-0 (has text layer) skips OCR &middot; else &rarr;</text>
         </g>
-        <line data-key="edgeJoinFunnel" x1="180" y1="328" x2="180" y2="344" stroke="rgba(255,255,255,.4)" stroke-width="1.6" stroke-linecap="round" marker-end="url(#a-g)"/>
-        <path data-key="edgeJoinFunnel" d="M 545 328 L 545 336 L 180 336 L 180 344" fill="none" stroke="rgba(255,255,255,.4)" stroke-width="1.6" stroke-linecap="round" marker-end="url(#a-g)"/>
-        <line data-key="edgeFunnelGates" x1="290" y1="376" x2="310" y2="376" stroke="rgba(255,255,255,.4)" stroke-width="1.6" stroke-linecap="round" marker-end="url(#a-g)"/>
-        <line data-key="edgeGatesSink" x1="520" y1="376" x2="540" y2="376" stroke="rgba(255,255,255,.4)" stroke-width="1.6" stroke-linecap="round" marker-end="url(#a-g)"/>
-        <path data-key="edgeReconcile" d="M 380 408 L 380 420" fill="none" stroke="rgba(148,163,184,.5)" stroke-width="1.6" stroke-dasharray="5 4" stroke-linecap="round" marker-end="url(#a-g)"/>
+        <line data-key="edgeJoinFunnel" x1="824" y1="136" x2="824" y2="160" stroke="rgba(255,255,255,.4)" stroke-width="1.6" stroke-linecap="round"/>
+        <path data-key="edgeJoinFunnel" d="M 824 160 L 220 160 L 220 168" fill="none" stroke="rgba(255,255,255,.4)" stroke-width="1.6" stroke-linecap="round" marker-end="url(#a-g)"/>
+        <line data-key="edgeFunnelGates" x1="274" y1="199" x2="298" y2="199" stroke="rgba(255,255,255,.4)" stroke-width="1.6" stroke-linecap="round" marker-end="url(#a-g)"/>
+        <line data-key="edgeGatesSink" x1="498" y1="199" x2="522" y2="199" stroke="rgba(255,255,255,.4)" stroke-width="1.6" stroke-linecap="round" marker-end="url(#a-g)"/>
+        <path data-key="edgeReconcile" d="M 470 230 L 470 254" fill="none" stroke="rgba(148,163,184,.5)" stroke-width="1.6" stroke-dasharray="5 4" stroke-linecap="round" marker-end="url(#a-g)"/>
 
         <!-- ══ EXTERNAL · OUTSIDE THE CLUSTER ══ -->
         <g data-key="ansibleNode">
-          <rect class="box" x="40" y="14" width="230" height="48" rx="14" fill="rgba(148,163,184,0.05)" stroke="#94A3B8" stroke-width="1.4" stroke-dasharray="5 4"/>
-          <use href="#ic-layers" x="54" y="28" width="20" height="20" class="ic" color="#CBD5E1" stroke="#CBD5E1"/>
-          <text x="82" y="37" font-size="12" font-weight="700" fill="#F1F5F9">Ansible + ArgoCD</text>
-          <text x="82" y="52" font-size="9" fill="#94A3B8">provisions + deploys &middot; external</text>
+          <rect class="box" x="15" y="6" width="210" height="34" rx="12" fill="rgba(148,163,184,0.05)" stroke="#94A3B8" stroke-width="1.4" stroke-dasharray="5 4"/>
+          <use href="#ic-layers" x="27" y="13" width="18" height="18" class="ic" color="#CBD5E1" stroke="#CBD5E1"/>
+          <text x="52" y="21" font-size="11" font-weight="700" fill="#F1F5F9">Ansible + ArgoCD</text>
+          <text x="52" y="33" font-size="8" fill="#94A3B8">provisions + deploys &middot; external</text>
         </g>
         <g data-key="fixturesNode">
-          <rect class="box" x="470" y="14" width="230" height="48" rx="14" fill="rgba(148,163,184,0.05)" stroke="#94A3B8" stroke-width="1.4" stroke-dasharray="5 4"/>
-          <use href="#ic-bucket" x="484" y="28" width="20" height="20" class="ic" color="#CBD5E1" stroke="#CBD5E1"/>
-          <text x="512" y="37" font-size="12" font-weight="700" fill="#F1F5F9">14 fixture PDFs</text>
-          <text x="512" y="52" font-size="9" fill="#94A3B8">uploaded to inbox/ &middot; external</text>
+          <rect class="box" x="775" y="6" width="210" height="34" rx="12" fill="rgba(148,163,184,0.05)" stroke="#94A3B8" stroke-width="1.4" stroke-dasharray="5 4"/>
+          <use href="#ic-bucket" x="787" y="13" width="18" height="18" class="ic" color="#CBD5E1" stroke="#CBD5E1"/>
+          <text x="812" y="21" font-size="11" font-weight="700" fill="#F1F5F9">14 fixture PDFs</text>
+          <text x="812" y="33" font-size="8" fill="#94A3B8">uploaded to inbox/ &middot; external</text>
         </g>
 
         <!-- ══ KUBERNETES CLUSTER · the background everything else deploys onto ══ -->
-        <rect data-key="clusterBoundary" x="20" y="78" width="720" height="364" rx="26" fill="rgba(96,165,250,0.04)" stroke="#60A5FA" stroke-width="2.4" stroke-dasharray="10 6"/>
-        <rect data-key="clusterBoundary" x="38" y="66" width="280" height="24" rx="8" fill="#0F172A"/>
-        <use data-key="clusterBoundary" href="#ic-cube" x="44" y="70" width="16" height="16" class="ic" color="#60A5FA" stroke="#60A5FA"/>
-        <text data-key="clusterBoundary" x="66" y="82" font-size="11" font-weight="800" letter-spacing="0.08em" fill="#60A5FA">MINIKUBE &middot; ARGOCD-MANAGED</text>
+        <rect data-key="clusterBoundary" x="8" y="46" width="984" height="242" rx="20" fill="rgba(96,165,250,0.04)" stroke="#60A5FA" stroke-width="2.2" stroke-dasharray="10 6"/>
+        <rect data-key="clusterBoundary" x="24" y="36" width="270" height="20" rx="7" fill="#0F172A"/>
+        <use data-key="clusterBoundary" href="#ic-cube" x="30" y="40" width="14" height="14" class="ic" color="#60A5FA" stroke="#60A5FA"/>
+        <text data-key="clusterBoundary" x="50" y="50" font-size="9.5" font-weight="800" letter-spacing="0.07em" fill="#60A5FA">MINIKUBE &middot; ARGOCD-MANAGED</text>
 
-        <!-- ══ BAND 1 (in-cluster) · INGEST & LEDGER ══ -->
-        <rect data-key="bandIngest" x="40" y="104" width="680" height="92" rx="16" fill="rgba(148,163,184,0.045)" stroke="#94A3B8" stroke-width="1.3" opacity="0.85"/>
-        <rect data-key="bandIngest" x="56" y="94" width="180" height="20" rx="6" fill="#0F172A"/>
-        <text data-key="bandIngest" x="64" y="108" font-size="10" font-weight="800" letter-spacing="0.1em" fill="#94A3B8">INGEST &amp; LEDGER</text>
+        <!-- ══ ROW 1 (in-cluster) · INGEST -> TEXT PRODUCTION -> JOIN, left to right ══ -->
+        <text data-key="bandIngest" x="24" y="66" font-size="9" font-weight="800" letter-spacing="0.08em" fill="#94A3B8">INGEST &amp; LEDGER</text>
+        <text data-key="bandJoin" x="446" y="66" font-size="9" font-weight="800" letter-spacing="0.08em" fill="#4ADE80">TEXT PRODUCTION &middot; FAN-OUT &amp; JOIN</text>
 
         <g data-key="orphanNode">
-          <rect class="box" x="50" y="124" width="180" height="64" rx="16" fill="rgba(148,163,184,0.08)" stroke="#94A3B8" stroke-width="1.4"/>
-          <use href="#ic-clock" x="64" y="140" width="24" height="24" class="ic" color="#E2E8F0" stroke="#E2E8F0"/>
-          <text x="96" y="150" font-size="13" font-weight="700" fill="#F1F5F9">Orphan detector</text>
-          <text x="96" y="165" font-size="9" fill="#94A3B8">10s poll &middot; *is* the ingest path</text>
+          <rect class="box" x="24" y="74" width="130" height="62" rx="14" fill="rgba(148,163,184,0.08)" stroke="#94A3B8" stroke-width="1.4"/>
+          <use href="#ic-clock" x="34" y="84" width="20" height="20" class="ic" color="#E2E8F0" stroke="#E2E8F0"/>
+          <text x="58" y="93" font-size="11" font-weight="700" fill="#F1F5F9">Orphan detector</text>
+          <text x="34" y="122" font-size="7.5" fill="#94A3B8">10s poll &middot; *is* ingest</text>
         </g>
         <g data-key="triageNode">
-          <rect class="box" x="250" y="124" width="180" height="64" rx="16" fill="rgba(148,163,184,0.08)" stroke="#94A3B8" stroke-width="1.4"/>
-          <use href="#ic-dag" x="264" y="140" width="24" height="24" class="ic" color="#E2E8F0" stroke="#E2E8F0"/>
-          <text x="296" y="150" font-size="13" font-weight="700" fill="#F1F5F9">Triage</text>
-          <text x="296" y="165" font-size="9" fill="#94A3B8">classify + dispatch</text>
+          <rect class="box" x="168" y="74" width="110" height="62" rx="14" fill="rgba(148,163,184,0.08)" stroke="#94A3B8" stroke-width="1.4"/>
+          <use href="#ic-dag" x="178" y="84" width="20" height="20" class="ic" color="#E2E8F0" stroke="#E2E8F0"/>
+          <text x="202" y="93" font-size="11" font-weight="700" fill="#F1F5F9">Triage</text>
+          <text x="178" y="122" font-size="7.5" fill="#94A3B8">validate + classify</text>
         </g>
         <g data-key="ledgerNode">
-          <rect class="box" x="450" y="124" width="230" height="64" rx="16" fill="rgba(148,163,184,0.08)" stroke="#94A3B8" stroke-width="1.4"/>
-          <use href="#ic-cylinder" x="464" y="140" width="24" height="24" class="ic" color="#E2E8F0" stroke="#E2E8F0"/>
-          <text x="496" y="150" font-size="13" font-weight="700" fill="#F1F5F9">Postgres ledger</text>
-          <text x="496" y="165" font-size="9" fill="#94A3B8">state machine + outbox</text>
+          <rect class="box" x="292" y="74" width="140" height="62" rx="14" fill="rgba(148,163,184,0.08)" stroke="#94A3B8" stroke-width="1.4"/>
+          <use href="#ic-cylinder" x="302" y="84" width="20" height="20" class="ic" color="#E2E8F0" stroke="#E2E8F0"/>
+          <text x="326" y="93" font-size="11" font-weight="700" fill="#F1F5F9">Postgres ledger</text>
+          <text x="302" y="122" font-size="7.5" fill="#94A3B8">state machine + outbox</text>
         </g>
-
-        <!-- ══ BAND 2 (in-cluster) · FAN-OUT, JOIN, AUTOSCALE ══ -->
-        <rect data-key="bandJoin" x="40" y="204" width="680" height="92" rx="16" fill="rgba(74,222,128,0.045)" stroke="#4ADE80" stroke-width="1.3" opacity="0.85"/>
-        <rect data-key="bandJoin" x="56" y="194" width="290" height="20" rx="6" fill="#0F172A"/>
-        <text data-key="bandJoin" x="64" y="208" font-size="10" font-weight="800" letter-spacing="0.1em" fill="#4ADE80">FAN-OUT, JOIN &amp; AUTOSCALE</text>
 
         <g data-key="pdfNode">
-          <rect class="box" x="50" y="224" width="160" height="64" rx="16" fill="rgba(74,222,128,0.08)" stroke="#4ADE80" stroke-width="1.4"/>
-          <use href="#ic-cube" x="64" y="240" width="24" height="24" class="ic" color="#86EFAC" stroke="#86EFAC"/>
-          <text x="96" y="250" font-size="13" font-weight="700" fill="#F1F5F9">PDF worker</text>
-          <text x="96" y="265" font-size="9" fill="#94A3B8">tier-0 pypdf text</text>
+          <rect class="box" x="446" y="74" width="140" height="62" rx="14" fill="rgba(74,222,128,0.08)" stroke="#4ADE80" stroke-width="1.4"/>
+          <use href="#ic-branch" x="456" y="84" width="20" height="20" class="ic" color="#86EFAC" stroke="#86EFAC"/>
+          <text x="480" y="93" font-size="11" font-weight="700" fill="#F1F5F9">PDF worker</text>
+          <text x="456" y="122" font-size="7.5" fill="#94A3B8">tier-0 text, or split</text>
         </g>
         <g data-key="ocrNode">
-          <rect class="box" x="240" y="224" width="160" height="64" rx="16" fill="rgba(74,222,128,0.08)" stroke="#4ADE80" stroke-width="1.4"/>
-          <use href="#ic-grid" x="254" y="240" width="24" height="24" class="ic" color="#86EFAC" stroke="#86EFAC"/>
-          <text x="286" y="250" font-size="13" font-weight="700" fill="#F1F5F9">OCR shard</text>
-          <rect x="286" y="258" width="9" height="9" rx="2" fill="none" stroke="#4ADE80" stroke-width="1" stroke-dasharray="2 2" opacity="0.75"/>
-          <text x="300" y="266" font-size="8" fill="#94A3B8">1&ndash;5 replicas &middot; KEDA</text>
+          <rect x="612" y="86" width="113" height="62" rx="14" fill="rgba(74,222,128,0.05)" stroke="#4ADE80" stroke-width="1" opacity="0.5"/>
+          <rect x="606" y="80" width="113" height="62" rx="14" fill="rgba(74,222,128,0.06)" stroke="#4ADE80" stroke-width="1.1" opacity="0.7"/>
+          <rect class="box" x="600" y="74" width="113" height="62" rx="14" fill="rgba(74,222,128,0.1)" stroke="#4ADE80" stroke-width="1.4"/>
+          <use href="#ic-grid" x="610" y="84" width="20" height="20" class="ic" color="#86EFAC" stroke="#86EFAC"/>
+          <text x="634" y="93" font-size="11" font-weight="700" fill="#F1F5F9">OCR shard</text>
+          <text x="610" y="106" font-size="7.5" fill="#94A3B8">rasterize + OCR</text>
+          <text x="610" y="128" font-size="7.5" font-weight="700" fill="#FBBF24">&times;1&ndash;5 &middot; KEDA</text>
         </g>
         <g data-key="joinNode">
-          <rect class="box" x="420" y="224" width="270" height="64" rx="16" fill="rgba(74,222,128,0.08)" stroke="#4ADE80" stroke-width="1.4"/>
-          <use href="#ic-split" x="434" y="240" width="24" height="24" class="ic" color="#86EFAC" stroke="#86EFAC"/>
-          <text x="466" y="250" font-size="13" font-weight="700" fill="#F1F5F9">Scatter-gather join</text>
-          <text x="466" y="265" font-size="9" fill="#94A3B8">UPDATE...RETURNING &middot; fires once</text>
+          <rect class="box" x="739" y="74" width="170" height="62" rx="14" fill="rgba(74,222,128,0.08)" stroke="#4ADE80" stroke-width="1.4"/>
+          <use href="#ic-split" x="749" y="84" width="20" height="20" class="ic" color="#86EFAC" stroke="#86EFAC"/>
+          <text x="773" y="93" font-size="11" font-weight="700" fill="#F1F5F9">Scatter-gather join</text>
+          <text x="749" y="122" font-size="7.5" fill="#94A3B8">UPDATE...RETURNING</text>
         </g>
 
-        <!-- ══ BAND 3 (in-cluster) · EXTRACTION & GATES ══ -->
-        <rect data-key="bandExtract" x="40" y="304" width="680" height="92" rx="16" fill="rgba(96,165,250,0.045)" stroke="#60A5FA" stroke-width="1.3" opacity="0.85"/>
-        <rect data-key="bandExtract" x="56" y="294" width="240" height="20" rx="6" fill="#0F172A"/>
-        <text data-key="bandExtract" x="64" y="308" font-size="10" font-weight="800" letter-spacing="0.1em" fill="#60A5FA">EXTRACTION &amp; GATES</text>
+        <!-- ══ ROW 2 (in-cluster) · EXTRACTION, GATES, SINK ══ -->
+        <text data-key="bandExtract" x="24" y="160" font-size="9" font-weight="800" letter-spacing="0.08em" fill="#60A5FA">EXTRACTION &amp; GATES</text>
 
         <g data-key="funnelNode">
-          <rect class="box" x="50" y="324" width="230" height="64" rx="16" fill="rgba(96,165,250,0.08)" stroke="#60A5FA" stroke-width="1.4"/>
-          <use href="#ic-flask" x="64" y="340" width="24" height="24" class="ic" color="#BFDBFE" stroke="#BFDBFE"/>
-          <text x="96" y="350" font-size="13" font-weight="700" fill="#F1F5F9">Extraction funnel</text>
-          <text x="96" y="365" font-size="9" fill="#94A3B8">mock &middot; cheap &middot; strong tiers</text>
+          <rect x="36" y="180" width="230" height="62" rx="14" fill="rgba(96,165,250,0.05)" stroke="#60A5FA" stroke-width="1" opacity="0.5"/>
+          <rect x="30" y="174" width="230" height="62" rx="14" fill="rgba(96,165,250,0.06)" stroke="#60A5FA" stroke-width="1.1" opacity="0.7"/>
+          <rect class="box" x="24" y="168" width="230" height="62" rx="14" fill="rgba(96,165,250,0.1)" stroke="#60A5FA" stroke-width="1.4"/>
+          <use href="#ic-flask" x="34" y="178" width="20" height="20" class="ic" color="#BFDBFE" stroke="#BFDBFE"/>
+          <text x="58" y="187" font-size="11" font-weight="700" fill="#F1F5F9">Extraction funnel</text>
+          <text x="34" y="200" font-size="7.5" fill="#94A3B8">mock &middot; cheap &middot; strong</text>
+          <text x="34" y="222" font-size="7.5" font-weight="700" fill="#FBBF24">&times;1&ndash;3 &middot; KEDA</text>
         </g>
         <g data-key="gatesNode">
-          <rect class="box" x="310" y="324" width="200" height="64" rx="16" fill="rgba(96,165,250,0.08)" stroke="#60A5FA" stroke-width="1.4"/>
-          <use href="#ic-shield-check" x="324" y="340" width="24" height="24" class="ic" color="#BFDBFE" stroke="#BFDBFE"/>
-          <text x="356" y="350" font-size="13" font-weight="700" fill="#F1F5F9">5 quality gates</text>
-          <text x="356" y="365" font-size="9" fill="#94A3B8">arithmetic defeats injection</text>
+          <rect class="box" x="298" y="168" width="190" height="62" rx="14" fill="rgba(96,165,250,0.08)" stroke="#60A5FA" stroke-width="1.4"/>
+          <use href="#ic-shield-check" x="308" y="178" width="20" height="20" class="ic" color="#BFDBFE" stroke="#BFDBFE"/>
+          <text x="332" y="187" font-size="11" font-weight="700" fill="#F1F5F9">5 quality gates</text>
+          <text x="308" y="216" font-size="7.5" fill="#94A3B8">arithmetic defeats injection</text>
         </g>
         <g data-key="sinkNode">
-          <rect class="box" x="540" y="324" width="150" height="64" rx="16" fill="rgba(96,165,250,0.08)" stroke="#60A5FA" stroke-width="1.4"/>
-          <use href="#ic-server" x="554" y="340" width="24" height="24" class="ic" color="#BFDBFE" stroke="#BFDBFE"/>
-          <text x="586" y="350" font-size="13" font-weight="700" fill="#F1F5F9">Outbox &rarr; sink</text>
-          <text x="586" y="365" font-size="9" fill="#94A3B8">first-writer-wins</text>
+          <rect x="528" y="174" width="170" height="62" rx="14" fill="rgba(96,165,250,0.06)" stroke="#60A5FA" stroke-width="1.1" opacity="0.6"/>
+          <rect class="box" x="522" y="168" width="170" height="62" rx="14" fill="rgba(96,165,250,0.1)" stroke="#60A5FA" stroke-width="1.4"/>
+          <use href="#ic-server" x="532" y="178" width="20" height="20" class="ic" color="#BFDBFE" stroke="#BFDBFE"/>
+          <text x="556" y="187" font-size="11" font-weight="700" fill="#F1F5F9">Outbox &rarr; sink</text>
+          <text x="532" y="200" font-size="7.5" fill="#94A3B8">first-writer-wins</text>
+          <text x="532" y="222" font-size="7.5" font-weight="700" fill="#94A3B8">&times;2 fixed</text>
         </g>
 
         <!-- ══ ASYNC (in-cluster) · RECONCILIATION ══ -->
         <g data-key="reconcileNode">
-          <rect class="box" x="80" y="410" width="600" height="30" rx="14" fill="rgba(100,116,139,0.06)" stroke="#64748B" stroke-width="1.4" stroke-dasharray="5 4"/>
-          <text x="98" y="429" font-size="11" font-weight="700" fill="#F1F5F9">Sweeper &middot; DLQ replay &middot; dead man's switch &middot; canary</text>
-          <text x="600" y="429" font-size="9" fill="#94A3B8" text-anchor="end">async &middot; finds lost work</text>
+          <rect class="box" x="24" y="254" width="944" height="26" rx="12" fill="rgba(100,116,139,0.06)" stroke="#64748B" stroke-width="1.4" stroke-dasharray="5 4"/>
+          <text x="40" y="271" font-size="9.5" font-weight="700" fill="#F1F5F9">Sweeper &middot; DLQ replay &middot; dead man's switch &middot; canary</text>
+          <text x="952" y="271" font-size="8" fill="#94A3B8" text-anchor="end">async &middot; finds lost work</text>
         </g>
       </svg>
     </div>
@@ -494,7 +496,7 @@ footer.close a{color:var(--ink-dim);}
   <div class="cards3">
     <div class="card c-slate reveal" style="--i:0">
       <div class="card-top"><svg class="ic-card" viewBox="0 0 20 20"><use href="#ic-shield-check"/></svg><div class="num">01</div></div>
-      <h3>56 tests, real infra<span class="ref" data-jump="apx-a3">A3</span></h3>
+      <h3>59 tests, real infra<span class="ref" data-jump="apx-a3">A3</span></h3>
       <p>Every fixture lands on its predicted terminal state -- no mocked Postgres, no mocked Kafka. The lock/join semantics under test are exactly what a mock would paper over.</p>
     </div>
     <div class="card c-amber reveal" style="--i:1">
@@ -550,19 +552,20 @@ footer.close a{color:var(--ink-dim);}
     <thead><tr><th>Component</th><th>Role</th><th>Version</th></tr></thead>
     <tbody>
       <tr><td class="mono">Python / uv</td><td>Runtime + dependency management, no manual venv</td><td class="mono">3.13, uv-managed</td></tr>
-      <tr><td class="mono">Postgres</td><td>The ledger &mdash; state machine, outbox, scatter-gather join</td><td class="mono">docker-compose, host-side</td></tr>
-      <tr><td class="mono">Redpanda</td><td>Kafka-API-compatible broker</td><td class="mono">docker-compose, host-side</td></tr>
-      <tr><td class="mono">fake-gcs-server</td><td>GCS-compatible object store (claim-check payloads)</td><td class="mono">docker-compose, host-side</td></tr>
-      <tr><td class="mono">Redis</td><td>Mock-OCR registry, cross-process test state</td><td class="mono">docker-compose, host-side</td></tr>
+      <tr><td class="mono">Postgres</td><td>The ledger &mdash; state machine, outbox, scatter-gather join</td><td class="mono">docker-compose (make e2e) &middot; ArgoCD-managed in-cluster pod (make e2e-k8s)</td></tr>
+      <tr><td class="mono">Redpanda</td><td>Kafka-API-compatible broker</td><td class="mono">docker-compose (make e2e) &middot; ArgoCD-managed in-cluster pod (make e2e-k8s)</td></tr>
+      <tr><td class="mono">fake-gcs-server</td><td>GCS-compatible object store (claim-check payloads)</td><td class="mono">docker-compose (make e2e) &middot; ArgoCD-managed in-cluster pod (make e2e-k8s)</td></tr>
+      <tr><td class="mono">Redis</td><td>Mock-OCR registry, cross-process test state</td><td class="mono">docker-compose (make e2e) &middot; ArgoCD-managed in-cluster pod (make e2e-k8s)</td></tr>
       <tr><td class="mono">Ansible</td><td>Sole orchestration layer &mdash; replaces bash scripts + raw kubectl/helm</td><td class="mono">tagged playbook, ansible/site.yml</td></tr>
       <tr><td class="mono">ArgoCD</td><td>GitOps deploy for every K8s manifest, KEDA included</td><td class="mono">reused from sibling repo's terraform</td></tr>
       <tr><td class="mono">KEDA</td><td>Autoscaling on Kafka consumer lag</td><td class="mono">2.x, ArgoCD-managed Application</td></tr>
       <tr><td class="mono">LiteLLM + Ollama</td><td>Real LLM tier &mdash; llama3.2:1b / qwen2.5:1.5b</td><td class="mono">reused from sibling mlops-llm-repo</td></tr>
-      <tr><td class="mono">Langfuse</td><td>Trace visualization for every real LLM call</td><td class="mono">reused from sibling mlops-llm-repo, zero extra code</td></tr>
+      <tr><td class="mono">Langfuse</td><td>Trace visualization for every real LLM call, plus this repo's own gate-outcome Scores attached to each trace</td><td class="mono">Langfuse stack reused from sibling mlops-llm-repo; tracing is zero extra code, scoring is docpipeline/stages/llm_client.py's push_gate_scores()</td></tr>
+      <tr><td class="mono">Prometheus + Grafana</td><td>Custom pipeline metrics (triage's per-classification counter) and Kafka/Redpanda topic + consumer-group metrics</td><td class="mono">plain Deployments, not the kube-prometheus-stack operator &mdash; k8s/templates/monitoring.yaml</td></tr>
     </tbody>
   </table>
   <div class="callout amber reveal" style="--i:1;margin-top:16px;">Found live, not on paper: <span class="mono-inline" style="font-size:.95em">uv run</span> forks a child rather than exec'ing into it, so backgrounding a long-lived process via <span class="mono-inline" style="font-size:.95em">exec uv run ...</span> captures the wrong PID. Every prior e2e run's host consumers leaked as zombies until this was fixed to exec the venv interpreter directly.</div>
-  <div class="src">Source: README.md &middot; pyproject.toml &middot; ansible/site.yml &middot; k8s/*.yaml &middot; argocd/*.yaml &middot; AGENT.md.</div>
+  <div class="src">Source: README.md &middot; pyproject.toml &middot; ansible/site.yml &middot; k8s/ (Helm chart) &middot; argocd/*.yaml &middot; AGENT.md.</div>
 </section>
 
 <!-- ══════════════════════ A2 · STATE MACHINE & LEDGER ══════════════════════ -->
@@ -635,7 +638,7 @@ keda-hpa-docpipeline-ocr-shard   Deployment/docpipeline-ocr-shard   3/1 (avg)   
       <div class="callout green">Confirmed live via <span class="mono-inline" style="font-size:.9em">kubectl get hpa</span> during the burst, not inferred from the YAML applying cleanly.</div>
     </div>
   </div>
-  <div class="src">Source: k8s/keda.yaml &middot; argocd/keda-application.yaml &middot; README.md "KEDA -- actually observed scaling" section.</div>
+  <div class="src">Source: k8s/templates/keda.yaml &middot; k8s/values.yaml's keda: block &middot; argocd/keda-application.yaml &middot; README.md "KEDA -- actually observed scaling" section.</div>
 </section>
 
 <!-- ══════════════════════ A5 · PRODUCTION READINESS ══════════════════════ -->
@@ -650,12 +653,12 @@ keda-hpa-docpipeline-ocr-shard   Deployment/docpipeline-ocr-shard   3/1 (avg)   
       <tr><td>Role-assignment gap</td><td><span class="mono-inline" style="font-size:.95em">grounding</span> passes on a swapped seller/buyer (both genuinely appear in the text); this repo proves the gap exists but doesn't implement the ensemble remediation</td><td>A second, independent extraction pass or a role-specific consistency check</td></tr>
       <tr><td>Cluster lifecycle</td><td><span class="mono-inline" style="font-size:.95em">make e2e-k8s</span> deletes and rebuilds the entire minikube cluster every run &mdash; correct for a clean-room demo, far too slow and destructive for a shared environment</td><td>A persistent cluster with proper reconcile-on-drift instead of delete-and-rebuild</td></tr>
       <tr><td>Real LLM latency</td><td>A CPU-only 1B model takes up to ~200s per call under load &mdash; fine for a canary, not for a production SLO</td><td>A right-sized hosted or GPU-backed model behind the same LiteLLM alias</td></tr>
-      <tr><td>Secrets</td><td>Postgres/LiteLLM credentials are hardcoded demo values in docker-compose.yml / k8s/configmap.yaml</td><td>A real secret manager (Vault, External Secrets), rotated credentials</td></tr>
+      <tr><td>Secrets</td><td>Postgres/LiteLLM credentials are hardcoded demo values in docker-compose.yml (host mode) and k8s/values.yaml + k8s/templates/{infra,jobs}.yaml (in-cluster mode)</td><td>A real secret manager (Vault, External Secrets), rotated credentials</td></tr>
       <tr><td>Data durability</td><td><span class="mono-inline" style="font-size:.95em">make reset</span> truncates the ledger and recreates Redpanda from scratch by design</td><td>Managed Postgres/Kafka with backups and point-in-time recovery</td></tr>
       <tr><td>Network</td><td>No NetworkPolicies; every pod can reach every pod</td><td>Namespace-scoped NetworkPolicies, least privilege</td></tr>
     </tbody>
   </table>
-  <div class="src">Source: README.md &middot; AGENT.md &middot; ansible/site.yml &middot; k8s/*.yaml &middot; docker-compose.yml.</div>
+  <div class="src">Source: README.md &middot; AGENT.md &middot; ansible/site.yml &middot; k8s/ (Helm chart) &middot; docker-compose.yml.</div>
 </section>
 
 <footer class="close">document-llm-ops &middot; a local replication of <a href="../../mlops-llm-repo">the 100k docs/day design doc</a>, reusing the sibling <a href="../../mlops-llm-repo">mlops-llm-repo</a>'s LiteLLM/Ollama/Langfuse stack</footer>
@@ -693,7 +696,7 @@ const STEPS=[
   {show:[]},
   {show:['clusterBoundary','ansibleNode','edgeAnsibleCluster'], hi:['clusterBoundary','ansibleNode']},
   {show:['bandIngest','orphanNode','triageNode','ledgerNode','fixturesNode','edgeFixturesOrphan','edgeOrphanTriage','edgeTriageLedger'], hi:['orphanNode','triageNode','ledgerNode']},
-  {show:['bandJoin','pdfNode','ocrNode','joinNode','edgeLedgerPdf','edgePdfOcr','edgeOcrJoin','edgeKeda'], hi:['joinNode','ocrNode']},
+  {show:['bandJoin','pdfNode','ocrNode','joinNode','edgeLedgerPdf','edgePdfOcr','edgeOcrJoin','edgePdfFunnel'], hi:['pdfNode','ocrNode']},
   {show:['bandExtract','funnelNode','gatesNode','sinkNode','edgeJoinFunnel','edgeFunnelGates','edgeGatesSink'], hi:['funnelNode','gatesNode']},
   {show:['reconcileNode','edgeReconcile'], hi:['reconcileNode']}
 ];
