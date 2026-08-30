@@ -9,41 +9,96 @@ running the thing live and watching it misbehave.
 
 **Confirmed solid, no open questions:**
 - `make e2e` (host, mock mode) — 56/56 tests pass, all 14 fixtures reach correct terminal states,
-  ~15s, stable across many repeated runs this session.
+  ~15s, stable across many repeated runs.
 - The K8s *deployment mechanics*: ArgoCD sync via `--core` (no port-forward), KEDA fully
   ArgoCD-managed, all 8 Deployments + 2 `ScaledObject`s deploy and become available, Kafka clients
   correctly reconnect after a Redpanda recreate. Each of these was a real, reproduced, root-caused
-  bug this session — see the sections below for each one's fix.
+  bug found live — see the sections below for each one's fix.
+- Repo migrated from the old `llmops-document-pipeline` working directory into this one
+  (`document-llm-ops`), pushed to `github.com/wmaucla/document-llm-ops`. This is now the canonical
+  location; the old directory is untouched but no longer the source of truth.
+- **GPU passthrough is now confirmed working end-to-end in Kubernetes, not just raw Docker.**
+  `document-llm-ops/ansible/site.yml`'s minikube start passes `--gpus=all`, and the sibling
+  `mlops-llm-repo`'s `k8s/ollama.yaml` requests `nvidia.com/gpu: 1` (stock `ollama/ollama` image, no
+  special build). Verified live on the cluster left running from the interrupted `make e2e-k8s`
+  attempt: `kubectl describe nodes minikube` shows `nvidia.com/gpu: 1` in both Capacity and
+  Allocatable (the device plugin — `nvidia-device-plugin-daemonset` in `kube-system` — registered
+  correctly); the ollama pod initially hit `FailedScheduling: Insufficient nvidia.com/gpu` for the
+  ~8s before the device plugin finished registering, then scheduled fine on retry (transient, not a
+  bug); `kubectl exec -n default deploy/ollama -- nvidia-smi` shows the RTX 2080 Ti; ollama's own
+  logs show `msg="inference compute" library=CUDA compute=7.5 name="NVIDIA GeForce RTX 2080 Ti"`;
+  `ollama ps` shows `100% GPU` (full offload, no CPU fallback layers). A real `/api/generate` call
+  via `kubectl port-forward` (warm, model already resident) returned in **0.079s total /
+  0.055s eval** for a 3-token response — confirms this is genuinely the fix for the 150s–7.5min
+  CPU-latency problem below, not just plumbing that happens to schedule.
+  **Note: the sibling repo's `k8s/ollama.yaml` GPU edit is still uncommitted there** (`git status`
+  shows `M k8s/ollama.yaml` in `mlops-llm-repo`) — it's picked up fine since the ansible flow
+  `kubectl apply`s the file directly, but commit it there if you want it to survive independently
+  of this repo's working tree.
 
-**Not yet cleanly verified — pick this up first:**
-- **GPU passthrough was just added and has never been run.** The host has an NVIDIA RTX 2080 Ti,
-  confirmed working with `docker run --gpus all` and the NVIDIA Container Toolkit already installed
-  — this is the actual fix for the latency problem below, not more SLO tuning. `site.yml`'s minikube
-  start now passes `--gpus=all`, and the sibling `mlops-llm-repo`'s `k8s/ollama.yaml` now requests
-  `nvidia.com/gpu: 1` (stock `ollama/ollama` image auto-detects CUDA, no image change needed).
-  **Next step: run `make e2e-k8s` and confirm the Ollama pod actually schedules with the GPU
-  (`kubectl exec -n default deploy/ollama -- nvidia-smi` should show the GPU) and that real
-  inference drops from 150s–7.5min down to low single-digit seconds.** If the pod fails to schedule,
-  check `kubectl describe pod` for GPU-related scheduling errors first — minikube's device plugin
-  setup for `--gpus=all` was confirmed to exist (the flag is supported and documented for this exact
-  driver/runtime combo) but was never actually exercised end to end this session.
-- **No green real-mode canary run has actually been observed end to end in K8s** — every attempt
-  this session either hit an infrastructure bug (now fixed) or ran into host-load-dependent CPU
-  inference latency (150s–7.5min for a single call). Individual real LLM calls *did* succeed (other
-  documents reached `complete`), so the mechanism works. GPU passthrough above should make this
-  moot, but confirm the canary genuinely passes rather than just assuming GPU fixes it.
-- **The 20s consumer-group settle pause after rollout-restart is unproven.** Added after one
-  observed stranded-message incident, but every later failure traced back to CPU-inference latency
-  instead, so this specific fix was never isolated and re-confirmed on its own.
+**GPU: confirmed working, with one real transient failure mode found and one fixed:**
+- A full `make e2e-k8s` run completed through image build, ArgoCD sync, KEDA, and rollout-restart,
+  but its *first* Ollama pod instance never became healthy: `kubectl exec ... nvidia-smi` returned
+  `Failed to initialize NVML: Unknown Error`, no CUDA/GPU lines anywhere in its logs, and live
+  `slot print_timing` showed **1.2-2.1 tokens/sec** — pure CPU speed despite the GPU resource
+  request being honored by the scheduler. This is a real, observed race: the GPU device plugin can
+  register with the node before it's actually able to hand out a working device to the *first*
+  container that claims it. **Fix confirmed live:** `kubectl delete pod` on the broken instance
+  forced a fresh scheduling attempt, and the replacement pod's `nvidia-smi` worked immediately
+  (`RTX 2080 Ti`, 2028MiB used, no errors). If a GPU-requesting pod is stuck `0/1 Ready` for more
+  than a couple minutes past its model-pull window, don't assume it'll self-heal — delete it and
+  let it reschedule.
+- **Confirmed-live gotcha, already fixed in `mlops-llm-repo/k8s/ollama.yaml`:** the readiness
+  probe's default 1s `timeoutSeconds` was too tight — two sequential `ollama list` invocations take
+  ~2-3s combined, so the probe flapped on an otherwise-healthy server, dropping the Service's only
+  endpoint (`kubectl get endpoints ollama` showed none) and making every downstream call fail with
+  "connection refused," which is exactly what made 6 documents sit at `extract_pending` with **zero**
+  extraction attempts logged even after the full 900s canary SLO elapsed — not a Kafka/consumer-group
+  bug, a starved-endpoint bug. Fixed with `timeoutSeconds: 5` on that probe.
+- **Real, measured GPU speedup once past the above:** a warm `/api/generate` call returned in
+  **6.03s total / 0.065s eval** for the tokenizer's `eval_duration` specifically (vs. the
+  documented 150s-7.5min CPU baseline) — genuinely GPU-accelerated, not just scheduled-with-a-GPU.
+  `ollama` Deployment in the sibling repo requests `nvidia.com/gpu: 1`; `document-llm-ops/ansible/
+  site.yml`'s minikube start passes `--gpus=all`. **The sibling repo's `k8s/ollama.yaml` edits are
+  still uncommitted there** (`git status` shows `M k8s/ollama.yaml`) — pick up fine via `kubectl
+  apply` regardless, but commit them there if you want them to survive independently of this
+  working tree.
+
+**Real bug found once GPU speed unblocked everything downstream — not an infra issue:**
+- **The canary's own synthetic document reproducibly lands in `review`, not `complete`, twice in a
+  row with an identical result** (`arithmetic` gate: `computed=100, declared=-100`) — the real model
+  extracts the total as **negative** for a document that never states a negative anywhere. Likely
+  cause: `canary.py`'s line item is phrased `"Line Item: Canary probe - 1.00"`, and
+  `llm_client.py`'s own prompt says `total_cents (integer, negative for credit memos)` — the small
+  model may be reading the bare hyphen-as-separator as a sign, or over-applying the
+  negative-for-credit-memos instruction to a document that isn't one. **This is the gates working
+  correctly** (`arithmetic` and `plausibility` both correctly rejected the bad value rather than
+  auto-posting it), not a pipeline defect — but it means the canary's strict "must reach `complete`"
+  check may not be the right success criterion for real-mode, since a real small model's occasional
+  gate-caught mistake is expected behavior, not pipeline failure.
+  **Do not "fix" this by just changing the delimiter in `canary.py`** — I tried
+  (`"Canary probe: 1.00"`) and reverted it: `mock_llm.py`'s line-item regex
+  (`r"Line Item:\s*(.+?)\s*-\s*(\$?-?[\d,]+\.\d{2})"`) *requires* the literal `" - "` separator, so
+  changing it breaks mock-mode canary parsing (arithmetic gate would see zero line items and go
+  `inconclusive` instead of `pass`). Same `" - "` format is used by every other fixture's line items
+  in `fixture_content.py`/`generate_fixtures.py` too, so they likely have the same latent risk under
+  real mode. **Real fix, not yet done:** either (a) make the mock regex accept a second, unambiguous
+  delimiter and migrate the canary (and ideally all fixtures) to it, or (b) decide the canary should
+  accept `review` as a pass condition when `EXTRACTION_MODE=real` (distinguishing "processed and
+  correctly gated" from "never processed at all," which is the failure mode that actually matters).
+- **Next step: run a full clean `make e2e-k8s` end to end** with all of the above already fixed
+  (readiness probe timeout, PID-capture, poison-message handling, max-poll-interval, `--core` mode,
+  `FIXTURE_LIMIT=3`) and confirm the *pipeline* (not necessarily the canary's `complete` assertion)
+  behaves correctly start to finish — expect the canary to still report `review` unless the
+  delimiter issue above is fixed first, and don't mistake that for an infra regression if it happens.
 - Consider adding a lightweight direct-Ollama smoke test (call `docpipeline.stages.llm_client.extract()`
   standalone, no Kafka/K8s involved) as a *second*, faster health check alongside the canary —
   proves Ollama connectivity in isolation without depending on consumer-group mechanics. Discussed,
   not implemented.
 
-**Environment note:** the minikube cluster and docker images were torn down and pruned at the end
-of this session (see git/shell history if you need exact commands) — `make e2e-k8s` starts fully
-fresh either way, so this doesn't block anything, just means the next run pays the full ~15-20 min
-cold-start cost (including re-pulling images that were flushed).
+**Environment note:** docker daemon was found stopped at the start of this session (needed
+`sudo systemctl start docker` — the agent cannot do this itself, no interactive sudo). Check it's
+running before assuming any infra command failure is a code/config bug.
 
 ## What this repo is
 
@@ -257,11 +312,14 @@ the fix itself — if this class of failure resurfaces, check queue depth first
 a growing queue means contention (fix: `FIXTURE_LIMIT`), a single stuck `extract_pending` document
 with a low queue count means something else broke.
 
-**Confirmed live, separately: real Ollama inference time is host-load-dependent, not fixed.** Even
-with contention resolved (`FIXTURE_LIMIT=3`), a single real call was observed anywhere from ~150s
-to 7.5 minutes depending on what else the host was doing (load average ~7 after hours of continuous
-minikube rebuilds in one session). 900s is margin for that variance, not a claim about typical
-latency — don't read it as "real extraction normally takes 15 minutes."
+**Confirmed live, separately: real Ollama inference time is host-load-dependent, not fixed —
+CPU-only.** Even with contention resolved (`FIXTURE_LIMIT=3`), a single real CPU-inference call was
+observed anywhere from ~150s to 7.5 minutes depending on what else the host was doing (load average
+~7 after hours of continuous minikube rebuilds in one session). 900s is margin for that variance,
+not a claim about typical CPU latency — don't read it as "real extraction normally takes 15
+minutes." **This is now moot with GPU passthrough** (see the confirmed-solid entry above): a warm
+GPU call completed in 0.079s, three orders of magnitude faster, making host load essentially
+irrelevant to canary timing going forward.
 
 ## Confirmed-live gotcha: stale Kafka clients survive a Redpanda recreate
 
