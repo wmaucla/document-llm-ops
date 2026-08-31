@@ -184,9 +184,18 @@ services:
       requests: {cpu: 25m, memory: 64Mi}
       limits: {cpu: 100m, memory: 128Mi}
 
-# Scales the two lag-bound deployments: ocr-shard (~900 CPU
-# fleet in prod) and extraction (token-quota bound in prod). lagThreshold: "1"
-# is artificially low so a local burst actually demonstrates scale-up.
+# Scheduled reporting. `failed` is terminal in practice -- nothing retries it
+# except dlq-replay on a version change -- so a growing failed population is
+# silent: throughput is unaffected and no alert fires. This gives it a cadence.
+#
+# The schedule is a placeholder (daily 06:00 UTC). Pick a real one against
+# whoever reads it; a report nobody sees on a schedule nobody chose is worse
+# than no report, because it looks like coverage.
+cronJobs:
+  - name: failed-report
+    schedule: "0 6 * * *"
+    command: ["python", "-m", "docpipeline.reconciliation.failed_report"]
+
 keda:
   kafkaBootstrapServers: "redpanda.default.svc.cluster.local:9092"
   scaledObjects:

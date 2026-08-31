@@ -1,0 +1,34 @@
+{{- range .Values.cronJobs }}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: docpipeline-{{ .name }}
+  annotations: {argocd.argoproj.io/sync-wave: "1"}
+spec:
+  schedule: {{ .schedule | quote }}
+  # A report is only useful if it reflects now. concurrencyPolicy Forbid stops
+  # a slow run overlapping the next; startingDeadlineSeconds means a run missed
+  # while the cluster was down is skipped rather than fired late against stale
+  # state. History is kept short -- `kubectl logs job/...` is the interface.
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 300
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: {{ .backoffLimit | default 0 }}
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+          - name: {{ .name }}
+            image: "{{ $.Values.image.repository }}:{{ $.Values.image.tag }}"
+            imagePullPolicy: {{ $.Values.image.pullPolicy }}
+            envFrom:
+            - configMapRef: {name: {{ $.Values.configMapName }}}
+            command: {{ .command | toJson }}
+            resources:
+              requests: {cpu: 50m, memory: 64Mi}
+              limits: {cpu: 200m, memory: 128Mi}
+{{- end }}

@@ -504,6 +504,18 @@
     # DEADMANS_SWITCH_WINDOW_SECONDS. Run last in verify-loop, where documents
     # have just settled, so silence there is a real failure rather than an idle
     # cluster -- do not move it ahead of the drain.
+    - name: Report on documents sitting in failed
+      ansible.builtin.command:
+        cmd: "kubectl exec deploy/docpipeline-triage -- python -m docpipeline.reconciliation.failed_report"
+      register: failed_report_result
+      changed_when: false
+      tags: [failed-report]
+
+    - name: Show the failed-state report
+      ansible.builtin.debug:
+        msg: "{{ failed_report_result.stdout_lines | default(['(no output)']) }}"
+      tags: [failed-report]
+
     - name: Check for total silence (dead man's switch)
       ansible.builtin.command:
         cmd: "kubectl exec deploy/docpipeline-triage -- python -m docpipeline.reconciliation.deadmans_switch"

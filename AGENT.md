@@ -452,7 +452,10 @@ stack, not mocks.
   `SKIP LOCKED`), `orphan_detector_0.py` (numbered as the true step 0 — the actual ingest loop;
   GCS has no bucket-notification wiring locally, so this polls `inbox/` every 10s — the standard
   fallback for that, not a deviation), `dlq_replay.py`, `deadmans_switch.py`,
-  `canary.py`, `operator.py` (read-only + break-glass lanes — see "The two operator lanes" below),
+  `canary.py`, `failed_report.py` (scheduled summary of what is sitting in `failed` — that
+  state is terminal in practice, so its population grows silently; run by the
+  `docpipeline-failed-report` CronJob, `k8s/templates/cronjobs.yaml`),
+  `operator.py` (read-only + break-glass lanes — see "The two operator lanes" below),
   `gpu_watchdog.py` (keeps ollama's models pinned in VRAM and restarts the ollama pod when it has
   silently fallen back to CPU — see "Known open bugs" #2; the only module in this repo that talks
   to the Kubernetes API rather than Postgres/Kafka/GCS, hence the only one with a
