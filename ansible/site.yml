@@ -504,17 +504,17 @@
     # DEADMANS_SWITCH_WINDOW_SECONDS. Run last in verify-loop, where documents
     # have just settled, so silence there is a real failure rather than an idle
     # cluster -- do not move it ahead of the drain.
-    - name: Report on documents sitting in failed
+    - name: Report on documents parked in failed and review
       ansible.builtin.command:
-        cmd: "kubectl exec deploy/docpipeline-triage -- python -m docpipeline.reconciliation.failed_report"
-      register: failed_report_result
+        cmd: "kubectl exec deploy/docpipeline-triage -- python -m docpipeline.reconciliation.terminal_report"
+      register: terminal_report_result
       changed_when: false
-      tags: [failed-report]
+      tags: [terminal-report]
 
-    - name: Show the failed-state report
+    - name: Show the terminal-state report
       ansible.builtin.debug:
-        msg: "{{ failed_report_result.stdout_lines | default(['(no output)']) }}"
-      tags: [failed-report]
+        msg: "{{ terminal_report_result.stdout_lines | default(['(no output)']) }}"
+      tags: [terminal-report]
 
     - name: Prune published outbox rows and old attempt_log history
       ansible.builtin.command:

@@ -452,9 +452,9 @@ stack, not mocks.
   `SKIP LOCKED`), `orphan_detector_0.py` (numbered as the true step 0 — the actual ingest loop;
   GCS has no bucket-notification wiring locally, so this polls `inbox/` every 10s — the standard
   fallback for that, not a deviation), `dlq_replay.py`, `deadmans_switch.py`,
-  `canary.py`, `failed_report.py` (scheduled summary of what is sitting in `failed` — that
-  state is terminal in practice, so its population grows silently; run by the
-  `docpipeline-failed-report` CronJob, `k8s/templates/cronjobs.yaml`),
+  `canary.py`, `terminal_report.py` (scheduled summary of what is parked in `failed` and
+  `review` — both grow silently, and nothing automatic re-drives `review` at all; run by the
+  `docpipeline-terminal-report` CronJob, `k8s/templates/cronjobs.yaml`),
   `prune.py` (retention for `outbox`/`attempt_log`, the two tables nothing else deletes from),
   `operator.py` (read-only + break-glass lanes — see "The two operator lanes" below),
   `gpu_watchdog.py` (keeps ollama's models pinned in VRAM and restarts the ollama pod when it has

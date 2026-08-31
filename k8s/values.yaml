@@ -184,17 +184,18 @@ services:
       requests: {cpu: 25m, memory: 64Mi}
       limits: {cpu: 100m, memory: 128Mi}
 
-# Scheduled reporting. `failed` is terminal in practice -- nothing retries it
-# except dlq-replay on a version change -- so a growing failed population is
-# silent: throughput is unaffected and no alert fires. This gives it a cadence.
+# Scheduled reporting on the two states documents park in. Both grow silently
+# -- throughput is unaffected and no alert fires. `review` is the worse of the
+# two: dlq-replay covers `failed` on a version change, but nothing automatic
+# ever re-drives `review`.
 #
 # The schedule is a placeholder (daily 06:00 UTC). Pick a real one against
 # whoever reads it; a report nobody sees on a schedule nobody chose is worse
 # than no report, because it looks like coverage.
 cronJobs:
-  - name: failed-report
+  - name: terminal-report
     schedule: "0 6 * * *"
-    command: ["python", "-m", "docpipeline.reconciliation.failed_report"]
+    command: ["python", "-m", "docpipeline.reconciliation.terminal_report"]
 
   # Retention. outbox and attempt_log grow without bound and nothing else
   # deletes from them; the partial indexes mean queries stay fast regardless,
