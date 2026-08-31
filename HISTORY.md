@@ -9,6 +9,370 @@ see [AGENT.md](AGENT.md) instead — this file is the "how we got here," not the
 
 ---
 
+**2026-08-31 (later) — `maxReplicaCount` restored to 3 and the forced-CPU reproduction finally
+run: bug #1's fix has direct evidence for the first time, bug #3's fix validated in both
+directions, and `replay-docs` turns out to reproduce bug #7 on every document.**
+
+Every previous "clean" extraction run was on a healthy GPU, where a 2.5s call trips neither the
+300s liveness probe nor any stuck threshold — so bugs #1 and #3 were *structurally unable* to
+fire and every green run was masking, not evidence. AGENT.md said the missing test was multiple
+replicas under slow inference. This session finally ran it.
+
+*Setup.* `k8s/values.yaml`'s `extraction.maxReplicaCount` back to 3 (from the 1-cap that had stood
+since 2026-08-30), synced via `make deploy` — no rebuild needed, it's a ScaledObject field. Then
+the degradation, in an order that matters: the deploy-time residency gate *fails the play* on a
+CPU-resident ollama and the `gpu-watchdog` deletes the pod on `size_vram == 0` every 300s, so both
+had to be worked around rather than fought — a full healthy `e2e-k8s` first, then
+`kubectl scale deploy/docpipeline-gpu-watchdog --replicas=0` and
+`kubectl set env deploy/ollama CUDA_VISIBLE_DEVICES=""`, then a 10-document backlog via
+`make replay-docs COUNT=10`. Confirmed degraded: GPU down to 322 MiB, host load to 12.3, calls at
+~114s instead of 2.5s, and a cold `qwen2.5:1.5b` load mid-pipeline (the ollama restart discarded
+`site.yml`'s warm-up — bug #2(a)'s scenario, reproduced incidentally).
+
+*Result 1 — bug #1's fix works.* 29 minutes, 3 replicas processing concurrently, real CPU latency,
+tier escalation, cold model load: **zero restarts, zero liveness warnings**. The window where an
+untouched heartbeat would have killed a pod (300s staleness + `failureThreshold: 3` ×
+`periodSeconds: 30` ≈ 390s) passed repeatedly with the pods demonstrably busy rather than idle.
+The `touch()` before each model call does bound staleness to one call as claimed. **This still
+does not prove the probe caused the *original* symptom** — the pre-fix code was never re-run under
+these conditions for a direct comparison. Correct status: mechanism closed, hypothesis now
+supported by direct evidence, not proven.
+
+*Result 2 — bug #3's fix works. A possible cost was spotted, then downgraded to an open question.*
+The sweeper correctly left slow-but-live `extract_running` documents alone for many minutes —
+exactly the theft-of-live-work it was written to stop, and the first time that has been exercised
+against genuinely slow extraction. Separately, 5 documents sat in `extract_pending` and were
+redriven only after the full `EXTRACT_STUCK_THRESHOLD_SECONDS`: published 12:55:26, redriven
+13:20:56, i.e. 1500s, where the pre-fix 30s threshold would have taken ~30 seconds.
+
+This was first written up here as "5 stranded documents nobody was coming for," with a threshold
+split (short for `extract_pending`, budget-derived for `extract_running`) as the obvious fix.
+**That overstated the evidence.** What was actually observed is that 5 documents sat in
+`extract_pending` for 1500s and were then redriven. Whether their `ocr.completed` messages were
+*lost* — or merely *queued behind slow inference*, waiting their turn exactly like the 3 documents
+that drained normally at 13:19 with no redrive at all — was never established. Consumer-group lag
+was not captured at the time, and it is the one measurement that separates the two.
+
+The distinction decides the fix, and inverts it. If the messages were lost, a shorter
+`extract_pending` threshold is right. If they were queued, a shorter threshold recreates bug #3's
+original failure — the sweeper redriving work that is progressing fine — merely relocated from
+`extract_running` to `extract_pending`, and with a deep backlog it would republish every queued
+document every sweeper cycle. `_claim_batch` cannot tell the two apart from the `documents` table
+alone, which is *why* one threshold currently covers both states.
+
+**Measured the same day, and the answer was QUEUED — the proposed fix would have been a
+regression.** `local_scripts/measure_pending_lag.py` was written for exactly this question and run
+under a fresh 10-document forced-CPU backlog. Three consecutive stable samples, identical:
+`extract_pending=6  extract_running=3  ocr.completed TOTAL-LAG=9`. That is `lag == pending +
+running` exactly: every pending document's message was still sitting in the topic unconsumed, and
+the three running ones counted toward lag only because extraction commits the offset after
+processing. Nothing had been lost, so there was nothing for a faster redrive to rescue — a short
+`extract_pending` threshold would have republished duplicates of healthy queued work every sweeper
+cycle, which is this bug's original failure mode moved from `_running` to `_pending`.
+
+So the 1500s wait is the system correctly declining to interfere with a deep queue, and the
+single threshold stays. Two process notes worth keeping: the measurement had to be *built* before
+the fix could be judged, and it is the second time in one session that a confidently-written
+finding was overturned by going and looking — the first being the `replay-docs`/bug #7 claim above.
+Both errors had the same shape: generalising from data collected under a degraded environment
+without a controlled comparison.
+
+*Result 3 — a `review` spike tracks inference health, not document shape. This was written up
+backwards first, and a prediction caught it within the hour.* Final state after restoring the GPU:
+`20/20 documents settled, 0 stuck`, but `complete=5 review=15` — all 13 replayed documents landed
+in `review`, every one `review:gates_exhausted`. The tempting inference, which this file briefly
+recorded as fact, was that `local_scripts/replay_docs.py` builds each document with
+`canary.synthetic_invoice_pdf_bytes()` — the exact synthetic invoice bug #7 says the small model
+mis-extracts — and that replays therefore inherently trip the `arithmetic` gate.
+
+**That was wrong.** The claim was restated as a falsifiable prediction against the next fresh
+`make verify-loop` on a healthy GPU: 3 replayed documents should land 3/3 in `review`. They landed
+3/3 in `complete` (`total: 7 complete=5 review=2`, the two reviews being the canary and one fixture
+from phase 1, unchanged from before the replay). Same code, same generator, opposite outcome — so
+the 13/13 review rate came from the *forced-CPU environment* those documents were processed in (the
+funnel exhausting tiers and repair attempts against slow, timing-out calls), not from anything
+about the documents themselves. The mistake was inferring a property of the document from data
+gathered entirely under a degraded environment, with no controlled comparison.
+
+The genuinely useful version of this finding is the inverse: **a `review` spike after
+`make replay-docs` is a signal that inference has degraded** — worth chasing as a bug #2 GPU
+problem — rather than expected gate noise to be waved through.
+
+*Two false alarms worth recording, since this file's whole theme is that they are expensive.*
+A monitor counting `kubectl get events --field-selector reason=Killing | grep extraction` reported
+a probe kill that never happened — all three matches were `Normal`/"Stopping container extraction"
+on old ReplicaSets from the deploy rollout. Bug #1's signature is `Warning` + "failed liveness
+probe" + `Exit Code: 137`, and `restartCount` is the ground truth. Separately, watching
+`extract_pending` drain from 8 to 5 was briefly read as "the stranding hypothesis is wrong" — it
+wasn't; 3 documents drained normally while 5 genuinely were stranded, and both were true at once.
+Partial drainage does not falsify a stranding claim.
+
+---
+
+**2026-08-31 — first start-to-finish `make verify-loop`: passed 7/7, confirmed bug #2's fix on a
+clean rebuild, and exercised a sweeper recovery path the 2026-08-30 baseline never hit.**
+
+Prior sessions had run every piece of `verify-loop` in order against a live cluster, but never as
+one invocation — this was the first. Exit 0, all five phases: `e2e-k8s` (`ok=25 changed=11
+failed=0`, the same recap as the 2026-08-30 validation), standalone `summary-k8s` (`ok=1
+failed=0`), `replay-docs COUNT=3`, `replay-wait` (drained; the timeout guard `skipped`), and a
+final `summary-k8s` reporting `✅ RUN COMPLETE — 7/7 documents settled, 0 stuck in-flight`
+(`complete=5 review=2`, `posted_documents: 5`).
+
+*Verified independently of the exit code*, since the Ansible recap doesn't surface `summarize.py`'s
+stdout and "failed=0" only means the play didn't error: all 11 pods at `RESTARTS 0`; GPU at
+3252 MiB resident (matching the ~2.8 GiB both models need); `gpu-watchdog` polling `/api/ps` every
+30s with `200 OK` and **zero heals or pod deletions**; LLM calls at ~2.5s each
+(12:36:39.707 → 12:36:42.232), three orders of magnitude off the 150-450s CPU-fallback range.
+`kubectl get deploy ollama` confirmed both patches live: `OLLAMA_KEEP_ALIVE=-1`,
+`OLLAMA_MAX_LOADED_MODELS=2`, and `limits.memory: 8Gi`.
+
+*The standalone `summary-k8s` calls are the direct regression test for bug #6* — before that fix a
+bare `summary-k8s` could fail the play on documents that were merely in flight. Both passed.
+
+*What this does not prove.* Bugs #1 and #3 remain unconfirmed, exactly as AGENT.md's bug #2 entry
+warns. A 2.5s call trips neither the 300s liveness probe nor either stuck threshold, so
+`RESTARTS 0` here is the GPU fix **masking** them, not evidence they are fixed. This run is not
+grounds for reverting `extraction.maxReplicaCount` from 1.
+
+*New behaviour vs. the baseline: the sweeper fired once.*
+`reconciler_stuck_docs_found{state=text_pending} 1`, where the 2026-08-30 run logged none at all.
+Benign, and arguably the most useful new datum in the run: `text_pending` is covered by the 30s
+`STUCK_THRESHOLD_SECONDS`, which is the correct threshold for text production in every mode, the
+redrive succeeded, and everything still settled 7/7. It is specifically **not** bug #3's failure
+mode — that was the sweeper claiming `extract_running` documents and burning their attempt budget,
+and both `review` documents finished at `extract_attempts=1`, so nothing was burned. The recovery
+path now has live coverage it previously lacked.
+
+The two `review` outcomes are bug #7 (`extraction ... -> review:gates_exhausted` on the first
+attempt), expected and absorbed.
+
+*Latent risk found while checking ArgoCD state, not previously recorded anywhere.*
+`mlops-llm-serving` sits permanently `OutOfSync` (`Healthy`), which is the unavoidable consequence
+of `site.yml` patching the live ollama Deployment while deliberately not editing the sibling repo's
+manifest — the drift *is* the fix. Neither Application has `syncPolicy.automated`, so nothing
+reverts it today. But enabling auto-sync or selfHeal on that Application would silently revert both
+patches and reintroduce bug #2 in full. The `gpu-watchdog` would catch the resulting CPU fallback;
+it would **not** catch the return of the 4Gi memory starvation, which has no continuous check at
+all. Recorded in AGENT.md's bug #2 as a standing constraint.
+
+Also fixed this session, all documentation rather than code: AGENT.md's bug #1 still asserted as
+current a `KAFKA_MAX_POLL_INTERVAL_MS = 900_000` self-contradiction that bug #3 had already fixed
+(it derives to 1500s); the presentation's A4-adjacent claims still advertised extraction's 1→3 KEDA
+autoscaling while it is capped at 1; and `agent-handoff.md` had gone actively misleading — its "do
+this first" section described the extraction heartbeat fix as `NOT YET IMPLEMENTED` when it had
+shipped, proposed a background-thread design where an inline touch-before-call is what actually
+landed, and its bug numbering no longer mapped to AGENT.md's. That file was a punch list whose
+items are now all resolved or tracked in AGENT.md, so it was deleted rather than corrected, as its
+own header instructed.
+
+---
+
+**2026-08-30 — ollama's GPU "falters and gets released": root-caused to a 5-minute default nobody
+overrode, plus a memory-starved container. Fixed entirely from this repo; the sibling
+mlops-llm-repo's `ollama.yaml` is deliberately untouched.**
+
+Framing going in was AGENT.md's existing bug #2: "GPU-registration race on cluster rebuild,"
+guarded by a one-shot self-heal in `ansible/site.yml`. That framing turned out to cover only the
+bring-up half, and the guard turned out not to work at all.
+
+*Evidence, from the live pod rather than the docs.* `kubectl logs deploy/ollama` showed the pod
+was on GPU and healthy at that moment — `NVIDIA GeForce RTX 2080 Ti (10818 MiB)`,
+`offloaded 17/17 layers to GPU`, both models in `CUDA0` buffers (~2.2 GiB of tensors). So the GPU
+is acquirable; the question was why it stops being held. Two answers, both visible in
+`kubectl describe pod -l app=ollama`:
+
+1. **`Environment: <none>`.** `OLLAMA_KEEP_ALIVE` was at its default of 5 minutes, so an idle model
+   unloads and its `llama-server` subprocess exits; the next request re-spawns it and re-runs
+   `ggml_cuda_init`. Every idle gap is a fresh chance to land on CPU, and with `FIXTURE_LIMIT=3`
+   plus a canary this pipeline is mostly idle gaps. This is what explains the observation that
+   never fit the bring-up-race theory: a pod that passed the deploy-time warm check being on CPU
+   twenty minutes later *without ever restarting*. Compounding it, only the cheap tier's model was
+   ever warmed, so a strong-tier escalation cold-loaded `qwen2.5:1.5b` for the first time
+   mid-pipeline, unwarmed and unverified.
+2. **`system_free="768.2 MiB" system_total="4.0 GiB"`**, with ollama's loader logging `disabling
+   mmap for llama-server load due to host memory pressure`. That is the 4Gi cgroup limit, not VRAM
+   — `CUDA_Host` pinned buffers count against it even though the tensors are in VRAM. The 2080 Ti
+   has 10.6 GiB and both models need ~2.8 GiB, so VRAM was never the constraint.
+
+*The old guard was a no-op.* `site.yml`'s post-self-heal verification ran
+`kubectl logs --tail=50 | grep -qv "ggml_cuda_init: failed" || (echo ...; exit 1)`. `grep -qv PAT`
+exits 0 when *any* line fails to match, which across 50 log lines is always true — so the
+`|| exit 1` was unreachable and every run "passed" regardless of GPU state. Treat any historical
+run that "passed" this check as unverified. Asserting absence needs `! grep -q PAT`.
+
+*Two things found only by probing the live cluster, both of which would otherwise have shipped
+broken.* The ollama image ships **no `curl` and no `wget`** (`exec: "curl": executable file not
+found in $PATH`), which invalidated a first design that had ansible `kubectl exec`-ing HTTP calls
+into the ollama pod. And `nvidia-smi` remains useless as a signal (a pod can pass it and still
+fail at real inference, per the earlier session) — `/api/ps`'s per-model `size_vram` is the
+structured signal that actually distinguishes GPU from CPU residency, `0` meaning CPU.
+
+*Fixes.* All in `document-llm-ops`; the sibling repo owns ollama's manifest and this repo patches
+the live object instead:
+- `ansible/site.yml` runs `kubectl set env deployment/ollama OLLAMA_KEEP_ALIVE=-1
+  OLLAMA_MAX_LOADED_MODELS=2` and `kubectl set resources --limits=memory=8Gi --requests=memory=2Gi`
+  right after the sibling's terraform applies it, then warms *both* tiers' models via
+  `ollama run` (the CLI, since there's no curl in that image). Pinning collapses N
+  `ggml_cuda_init` rolls into one per pod lifetime, which is the single biggest change here.
+- New `docpipeline/reconciliation/gpu_watchdog.py` + a `gpu-watchdog` Deployment
+  (`k8s/values.yaml`) with a narrowly-scoped ServiceAccount/Role/RoleBinding
+  (`k8s/templates/rbac.yaml`, pods list/delete in one namespace only). It polls `/api/ps` every
+  30s, re-pins a model that merely unloaded, and deletes the ollama pod when a model comes back
+  CPU-resident — rate-limited by a 300s cooldown so a genuinely GPU-less host degrades to periodic
+  restarts rather than a thrash loop. This is the "otherwise let the pod churn" half, automated
+  and continuous, which is what the one-shot deploy-time check never was.
+- `site.yml`'s deploy-time gate now execs `gpu_watchdog --check-once` inside that same pod, so the
+  gate and the continuous enforcement run identical code and cannot silently diverge the way the
+  grep did. `k8s/templates/deployment.yaml` gained an optional `serviceAccountName`.
+- `tests/test_gpu_watchdog.py` covers the decision table — the interesting part being which of
+  three outcomes each ollama state maps to, since a missed CPU fallback costs 3 orders of
+  magnitude of latency while a spurious restart kills in-flight inference for nothing.
+
+*Deliberately not done:* a custom ollama image. The stock image already auto-detects CUDA
+correctly (proven live above), and a rebuilt image can't fix device wiring or the mid-life reload,
+which is the actual recurring failure. It would only buy faster restarts.
+
+*Suspected coupling to bug #1,* recorded in AGENT.md: CPU-fallback inference runs 150-450s per
+call against extraction's 300s liveness probe, so this is a plausible trigger for the
+"wedged extraction consumer" restarts rather than an unrelated issue.
+
+*Live-validated the same day, first attempt, full teardown/rebuild:* `ok=25 changed=11 failed=0
+unreachable=0`. Every new step held — the `Recreate` rollout after `kubectl set env`/`set
+resources` settled without the single-GPU deadlock, both models warmed, the residency gate passed
+without needing its heal path, the canary passed, and `summarize.py` reported `✅ RUN COMPLETE —
+4/4 documents settled` (`complete=2 review=2`, `posted_documents: 2`; the two `review`s are the
+known arithmetic-gate false positive, unrelated). The new Helm objects (ServiceAccount, Role,
+RoleBinding, and a 9th Deployment via the new optional `serviceAccountName`) synced through ArgoCD
+without incident. Extraction stayed at `RESTARTS 0` and the sweeper logged no
+`reconciler_stuck_docs_found` — which is the GPU fix *masking* bugs #1 and #3 (a 0.079s call
+finishes far inside both the 30s sweeper threshold and the 300s probe window), not evidence either
+is fixed. Recorded explicitly in AGENT.md so a future green run isn't misread as clearing them.
+
+*Audit findings from the same session, documented but not fixed* (AGENT.md bugs #3, #4, #5, #7):
+the sweeper's 30s `STUCK_THRESHOLD_SECONDS` is shorter than a single real LLM call so it redrives
+actively-processing documents; `outbox.relay_once` discards `producer.flush()`'s return value and
+can mark undelivered messages as published; the sweeper never writes `last_error` when it caps a
+document; and `summarize.py`/`wait_for_drain.py` leak their ledger connections. The `last_error`
+finding also corrected an overstatement made earlier in the same session — an empty `last_error`
+had been cited as evidence for the bug #1 liveness-probe hypothesis when it is simply what the
+sweeper's give-up path always produces.
+
+---
+
+**2026-08-30 — the "wedged extraction consumer" hunt, in full: five hypotheses, four mitigations,
+and a late re-reading of the evidence that inverts the causality.** This is the narrative behind
+AGENT.md's "Known open bugs" #1, moved here so that entry can stay current-state only. Ordered as
+it actually happened.
+
+*Original signature.* A `docpipeline-extraction` replica silently stops consuming after processing
+some number of messages: no crash, no restart, no error logged, just goes quiet while still
+`Running`/`Ready`. Reproduced independently 3 times across fresh clusters, always with the same
+tell (`kubectl exec deploy/redpanda -- rpk group describe extraction` shows lag stuck on one
+partition while others are caught up), each time confirmed by waiting well past the canary's 900s
+SLO with zero recovery.
+
+*Mitigation round 1 — make the symptom self-heal.* Reasoning at the time: every code path in
+`extraction_4.py` that could raise is already caught and logged by `run_forever()`'s own
+`except Exception`, so a silent hang with zero log output can only mean the process is genuinely
+*blocked* on something with no timeout. Three changes to close that gap without the root cause:
+- `docpipeline/infra/heartbeat.py` touches `/tmp/heartbeat` at the top of every poll-loop iteration
+  and immediately after every model response inside `run_funnel`'s repair loop.
+- `ledger.connect()` sets a session-level `statement_timeout` (`PG_STATEMENT_TIMEOUT_MS`, default
+  30s) on every consumer's connection, ruling out a stuck-on-a-DB-lock hang.
+- `k8s/values.yaml`'s `extraction` service gets a `livenessProbe` (300s staleness, sized as
+  "200s `LITELLM_TIMEOUT_SECONDS` + 100s margin") execing a heartbeat-freshness check.
+
+*Live test — probe works, pod re-wedges immediately, and the hang looks earlier than documented.*
+A real `make e2e-k8s` canary run failed its 900s SLO. The extraction pod had restarted **4 times**
+via the liveness probe (`Exit Code: 137`, `Reason: Killing — Container extraction failed liveness
+probe`, recurring every ~5-6 minutes) — the mitigation genuinely fires. But every crashed
+container's logs showed **only** `"extraction consumer started"` — no httpx call, no gate result.
+Read at the time as: the hang happens *before* `run_funnel` is ever reached, earlier than the
+"successful LLM call, then silence" signature of the 3 prior reproductions. Ruled out live: Kafka
+group was `Stable`/`0 lag`, litellm answered a health check in 1.1s, no blocked queries in
+`pg_stat_activity`. That left the GCS reads in `ensure_assembled` as the strongest candidate —
+code inspection confirmed **none passed an explicit `timeout`**, relying on
+`google-cloud-storage`'s undocumented per-call default. Fixed: every call in `gcs.py` now passes
+`timeout=config.GCS_TIMEOUT_SECONDS` (30s).
+
+*Re-test — GCS timeout did NOT fix it.* Fresh teardown/rebuild with the timeout in place. The run
+succeeded end to end (`✅ RUN COMPLETE`, canary passed) only because drain-wait + sweeper give-up
+now bound it — but one extraction replica still restarted twice, with **identical** logs: only
+`"extraction consumer started"`, no exception, despite the process now having *two* independent
+timeouts (DB, GCS) on every blocking call it should reach before the model call. Two documents
+landed in `failed` (`extract_attempts=5`, empty `last_error`). Hypothesis revised to
+`kafka_utils.poll_json()`'s underlying `Consumer.poll()` blocking past its nominal 1.0s timeout at
+the librdkafka/socket level — a known confluent-kafka issue class around reconnects, and this
+always happened shortly after `site.yml`'s post-deploy rollout-restart.
+
+*Narrowed to a simultaneous-join race.* Caught live on a running cluster: `rpk group describe
+extraction` matched per-partition lag to per-pod IPs and logs. Two of three replicas (`5mtqg`,
+`pxslf`) showed zero activity past `"extraction consumer started"` with their partitions' lag
+steadily *growing*, minutes after the group itself reported `STATE Stable` — so not "waiting for a
+rebalance." The decisive-looking clue: **both wedged replicas had started at the exact same
+timestamp** (the same rollout-restart, which restarts a KEDA-scaled Deployment's replicas
+simultaneously), while a third replica that had separately restarted solo came up and worked
+immediately. Read as a JoinGroup/SyncGroup thundering herd, structurally possible only for the two
+KEDA-scaled consumers (`extraction`, `ocr-shard`).
+
+*Mitigation round 2 — join jitter. Did not close the gap.* `make_consumer()` now sleeps
+`random.uniform(0, KAFKA_JOIN_JITTER_SECONDS)` before creating the `Consumer` (default `0`/off;
+`k8s/values.yaml` sets `8`). Added `KAFKA_CONSUMER_DEBUG=1` (off by default) for librdkafka's own
+`consumer,cgrp` logging. Pod start timestamps did come back staggered — jitter structurally
+working. **But lag still climbed (88 → 94), and `rpk group describe extraction`'s
+partition-to-member table pointed at pod IPs that no longer existed** — none of the three running
+replicas' IPs appeared in the assignment output. Group reported `STATE Stable` and `MEMBERS 7`
+(should be 3). Read as the coordinator failing to reassign partitions away from departed members.
+Caveat noted at the time: that cluster had been through heavy consumer-group churn from the same
+session's testing against a never-recreated Redpanda.
+
+*Caveat resolved — reproduced clean.* Full teardown/rebuild (new minikube, new Redpanda, no
+leftover churn). Same pattern at the same point: right after the post-deploy rollout-restart, 2 of
+3 extraction replicas took a liveness-probe restart within a couple minutes (the third stayed at
+0), and the canary genuinely failed — `did not reach complete within 900s SLO`. Jitter confirmed
+not sufficient on a clean cluster.
+
+*Workaround — `maxReplicaCount` capped at 1 (was 3).* A single replica structurally can't race
+siblings that don't exist. Costs little real throughput locally (every replica already serializes
+on the one Ollama pod), but `extraction` no longer demonstrates KEDA autoscaling in the
+presentation's A4 appendix (`ocr-shard`, 1-5, still does and has never shown this issue).
+
+*False alarm along the way, worth keeping as a diagnostic lesson.* During a post-rebuild check,
+one document sat at `extract_pending` for several minutes with no new log lines from its assigned
+replica — identical-looking to the signature above — but on re-check it had genuinely finished
+(`review:gates_exhausted`, `repair_attempts=3`, `extract_attempts=2`), and
+`pg_stat_activity`/`pg_locks` showed no blocked queries at any point. Cause of the *false alarm*:
+a document needing multiple schema-repair rounds issues one full LLM call per round, and every
+extraction replica shares the *same single* Ollama pod — 3 repair rounds queued behind other
+replicas' calls easily reach 10+ minutes for one document, with long silent gaps between its
+`httpx ... 200 OK` lines that look exactly like a hang. **Lesson: don't conclude "wedged" without
+either (a) an actual blocked query in `pg_stat_activity`/`pg_locks`, or (b) waiting past the
+canary's own 900s SLO.**
+
+*Audit re-reading of the accumulated evidence — causality is probably inverted.* Reviewing the
+above as a whole rather than session by session: `heartbeat.touch()` is only called on message
+pickup and *after a model call returns successfully* — every failure branch of `run_funnel`'s
+repair loop (including the transient/timeout `continue`) loops without touching it. The funnel
+permits 6 model calls per message (2 tiers × `MAX_REPAIR_ATTEMPTS + 1`) at
+`LITELLM_TIMEOUT_SECONDS=200` each, so up to ~1200s of legitimate silence — against a 300s probe
+with `failureThreshold: 1`. Two slow calls, or one at the ~450s CPU latency this same session
+recorded, trips it. Under that reading every artifact above is explained without any Kafka bug:
+the "only `extraction consumer started`" logs are an in-flight `httpx.post` that hasn't returned
+yet (not a hang before `run_funnel`); the ~5-6 minute restart cadence *is* the 300s threshold; the
+`MEMBERS 7` / stale-IP assignments are ghosts left by SIGKILL sending no graceful `LeaveGroup`;
+`extract_attempts=5` with an empty `last_error` is what a killed process leaves behind, since
+`increment_attempts` commits before the funnel runs; and both prior "fixes" failed because neither
+GCS timeouts nor join jitter addresses call *latency*. Also notable: `extraction` is the only
+service with a `livenessProbe` at all, which explains the apparent "only KEDA-scaled consumers"
+correlation better than a join race does (`ocr-shard` scales 1→5 and has never shown this). The
+repo also contradicts itself here — `config.py` sets `KAFKA_MAX_POLL_INTERVAL_MS = 900_000`
+explicitly to cover "two tiers plus repair retries at 200s each," while the probe comment sizes
+300s from a single call. Not yet tested live; see AGENT.md's bug #1 for the current state and the
+falsification test.
+
+---
+
 **Same-session, after the ArgoCD/Helm migration below: Langfuse Score integration, a custom
 Prometheus metric, a lightweight Prometheus+Grafana stack, and `docpipeline/text/` split out of
 `stages/` — confirmed working live, modulo the already-tracked wedged-extraction-consumer bug:**

@@ -1,17 +1,16 @@
 # document-llm-ops
 
-A local, runnable implementation of [the 100k docs/day document pipeline design](../mlops-llm-repo)
-— Part I (production design) and Part II ("Local replication on minikube") of that design doc,
-covering the entire local build order, steps 0–10.
+A local, runnable document-extraction pipeline built to production shape rather than demo shape,
+sized for a ~20k docs/day workload.
 
 This is **not** the toy invoice-extraction eval harness in `mlops-llm-repo`. This is the
 production-shaped pipeline: a document ledger with a real state machine, a transactional outbox, a
 scatter-gather join for sharded OCR, a cascading extraction funnel gated by deterministic quality
 gates, a reconciliation tier that recovers lost work, a real LLM tier behind the sibling repo's
-LiteLLM gateway (with Langfuse trace + score visibility), KEDA-driven autoscaling, and the
-operator/break-glass lanes the design's "Enforcement is structural, not policy" section describes
-— all exercised against real Postgres, real Kafka (Redpanda), a real GCS-compatible object store,
-and (for step 8) a real small model, not mocks.
+LiteLLM gateway (with Langfuse trace + score visibility), KEDA-driven autoscaling, and
+operator/break-glass lanes whose guardrails are structural rather than policy — all exercised
+against real Postgres, real Kafka (Redpanda), a real GCS-compatible object store, and a real small
+model, not mocks.
 
 **Status: live-verified end to end**, twice over via two genuinely separate paths that share no
 infrastructure — `make e2e` (host processes, mock LLM, ~15s) and `make e2e-k8s` (Kubernetes
@@ -57,7 +56,7 @@ Needs: Docker with Compose v2 (`docker compose version` should work), `psql`,
 resolves the interpreter from `.python-version` and manages the environment itself),
 `poppler-utils` + `tesseract-ocr` on the host if you want the real-OCR opt-in path, and — only for
 `make e2e-k8s` — `minikube`, `kubectl`, `ansible`, `terraform`, and the `argocd` CLI, plus a
-checkout of the sibling [`mlops-llm-repo`](../mlops-llm-repo) as a sibling directory.
+checkout of `mlops-llm-repo` as a sibling directory.
 
 ```bash
 make install                 # uv sync — no venv to create or activate yourself
@@ -100,14 +99,55 @@ psql -c "SELECT doc_id, state, vendor, invoice_no FROM documents ORDER BY create
 If ports 5432/6379 are already taken by something else on your machine (the defaults here are
 remapped to 55432/6380 for exactly that reason), edit `docker-compose.yml` and `.env` together.
 
+## How to tell a run actually finished — and what "finished" means
+
+**`make summary`** is the command — run it any time you want to know if the last run actually
+finished (host mode; for a live in-cluster check use
+`kubectl exec deploy/docpipeline-triage -- python local_scripts/summarize.py`). It's a real
+pass/fail gate, not just a printout: it prints `✅ RUN COMPLETE` and exits 0 if every document
+reached one of the three terminal states below, or `❌ RUN INCOMPLETE` (listing exactly which
+documents, and their current state) and exits 1 if anything is still in-flight. It's also the last
+step of both `make e2e` and `make e2e-k8s` themselves — both poll
+(`local_scripts/wait_for_drain.py`) until the ledger actually settles before it runs, so it never
+gates on a lucky snapshot.
+
+`make summary` reflects the *entire* shared ledger, not just "the last thing you ran" — if you've
+been running `make test`/pytest against the same local Postgres, `tests/conftest.py` now truncates
+the ledger both before *and* after the suite, so it won't leave debris behind. But any host
+consumer process that didn't get shut down cleanly (see AGENT.md's PID-capture gotcha) will keep
+silently processing documents in the background and show up here too — if `make summary` reports
+something you don't recognize, `ps aux | grep docpipeline` before assuming it's a pipeline bug.
+
+Every document ends up in exactly one of three states (`documents.state` in the ledger):
+
+| State | Means | Reachable from |
+|---|---|---|
+| `complete` | Extracted, passed every blocking quality gate (grounding, arithmetic, business_dedupe), auto-posted. Fully automated, no human involved. | The extraction funnel, on a clean gate pass |
+| `review` | Processing happened but the system deliberately didn't trust the result enough to auto-post. | A triage-time reject needing human judgment (encrypted/corrupt PDF, oversized) **or** the funnel exhausting every tier/repair attempt without a clean gate pass **or** the auto-post kill switch **or** a duplicate caught at commit time |
+| `failed` | A harder, earlier rejection — the upload itself was never valid (zero-byte, unsupported MIME) — or an unrecoverable error. | Triage, mostly before any real processing starts |
+
+**`review` and `failed` are not failures of this repo's code** — they're the pipeline correctly
+declining to auto-trust something, which is the whole point of the quality-gate design (see
+"The problem" in the presentation). A run where every document lands in `complete` would actually
+be suspicious for real-model-mode fixtures that are *designed* to exercise the reject/review paths.
+What `summarize.py` actually checks for is **in-flight** states —
+`text_pending`/`text_running`/`extract_pending`/`extract_running` — which mean processing hasn't
+settled yet. All three of the states above are fine outcomes; a document still in one of the
+in-flight states after the drain-and-summary steps means something is actually stuck.
+
+`review` and `failed` aren't dead ends either — the sweeper and the operator's break-glass lane can
+redrive both of them back to `extract_pending` (see the architecture diagram's dashed "redriven"
+loop). See [AGENT.md](AGENT.md)'s "The state machine and the scatter-gather join" for the full
+transition table.
+
 ## Known limitations / deliberately deferred
 
 - **EU locale amounts/dates aren't parsed** by the mock LLM's regex-based extractor — a real LLM
   tier wouldn't have this problem; it's a mock-LLM limitation, not a pipeline-mechanics gap.
 - **No ensemble/consensus tier.** The role-swap gap (grounding can't verify seller/buyer
   assignment) is proven to exist (`test_extraction_funnel.py`) but not remediated.
-- **No central Redis token governor** — Redis is stood up per the design doc's infra list, but
-  nothing reads or writes to it yet; no concurrent LLM call volume locally would exercise one.
+- **No central Redis token governor** — Redis is stood up as part of the infra tier, but nothing
+  reads or writes to it yet; no concurrent LLM call volume locally would exercise one.
 - **No Argo Workflow wrapper for the operator lanes** — Argo Workflows already runs in this same
   minikube cluster for the sibling repo, so this would be additive, not a redesign; not done here
   since the interesting part is the guardrails inside `operator.py`, not the YAML that invokes it.
