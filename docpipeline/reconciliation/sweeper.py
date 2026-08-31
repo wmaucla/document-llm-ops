@@ -19,6 +19,7 @@ from collections import Counter
 
 from docpipeline import config
 from docpipeline.core import ledger
+from docpipeline.reconciliation import queries
 
 log = logging.getLogger(__name__)
 
@@ -32,20 +33,7 @@ def _claim_batch(cur, batch_cap: int) -> list[dict]:
     # consumer lag while the original worker goes on to succeed. See
     # config.EXTRACT_STUCK_THRESHOLD_SECONDS.
     cur.execute(
-        """
-        SELECT doc_id, state, gcs_path, page_count, has_text_layer, shards_total,
-               priority, text_attempts, extract_attempts
-          FROM documents
-         WHERE (
-                 (state = ANY(%(text_states)s)
-                  AND state_updated_at < now() - (%(text_threshold)s || ' seconds')::interval)
-              OR (state = ANY(%(extract_states)s)
-                  AND state_updated_at < now() - (%(extract_threshold)s || ' seconds')::interval)
-               )
-         ORDER BY priority DESC, state_updated_at ASC
-         LIMIT %(cap)s
-         FOR UPDATE SKIP LOCKED
-        """,
+        queries.CLAIM_STUCK_BATCH,
         {
             "text_states": list(ledger.TEXT_STATES),
             "text_threshold": config.STUCK_THRESHOLD_SECONDS,

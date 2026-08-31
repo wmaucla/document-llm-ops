@@ -86,7 +86,10 @@ def transition(cur, doc_id: str, to_state: str, *, from_states: set[str] | None 
 
 
 def enqueue(cur, doc_id: str, topic: str, payload: dict, headers: dict | None = None) -> None:
-    cur.execute(queries.ENQUEUE, (doc_id, topic, Json(payload), Json(headers) if headers else None))
+    cur.execute(  # arch diagram: "Outbox → sink", in the caller's transaction
+        "INSERT INTO outbox (doc_id, topic, payload, headers) VALUES (%s, %s, %s, %s)",
+        (doc_id, topic, Json(payload), Json(headers) if headers else None),
+    )
 
 
 def enqueue_many(cur, rows: list[tuple[str, str, dict]]) -> None:
@@ -94,8 +97,10 @@ def enqueue_many(cur, rows: list[tuple[str, str, dict]]) -> None:
     transactions' in the outbox cost table."""
     if not rows:
         return
-    cur.executemany(queries.ENQUEUE_MANY,
-                    [(doc_id, topic, Json(payload)) for doc_id, topic, payload in rows])
+    cur.executemany(  # same, batched for fan-out (N shard messages from one split)
+        "INSERT INTO outbox (doc_id, topic, payload) VALUES (%s, %s, %s)",
+        [(doc_id, topic, Json(payload)) for doc_id, topic, payload in rows],
+    )
 
 
 def route_text_production(has_text_layer: bool, page_count: int) -> tuple[str, int]:
@@ -168,7 +173,7 @@ def record_shard_and_maybe_join(cur, doc_id: str, shard_idx: int, completed_payl
 
 
 def missing_shards(cur, doc_id: str, shards_total: int) -> list[int]:
-    cur.execute(queries.SELECT_SHARD_INDEXES, (doc_id,))
+    cur.execute("SELECT shard_idx FROM document_shards WHERE doc_id = %s", (doc_id,))
     present = {r["shard_idx"] for r in cur.fetchall()}
     return [i for i in range(shards_total) if i not in present]
 
@@ -230,7 +235,7 @@ def increment_attempts(cur, doc_id: str, column: str) -> int:
     if column not in _ATTEMPT_COLUMNS:
         raise ValueError(f"not an attempt column: {column!r}")
     cur.execute(
-        queries.INCREMENT_ATTEMPTS_TEMPLATE.format(column=column),  # noqa: S608 — allowlisted identifier
+        f"UPDATE documents SET {column} = {column} + 1 WHERE doc_id = %s RETURNING {column}",
         (doc_id,),
     )
     return cur.fetchone()[column]
@@ -245,7 +250,7 @@ def set_last_error(cur, doc_id: str, message: str) -> None:
     up repeatedly in debugging evidence trails explaining nothing, and was once
     mistaken for a signal about *how* the document died.
     """
-    cur.execute(queries.SET_LAST_ERROR, (message, doc_id))
+    cur.execute("UPDATE documents SET last_error = %s WHERE doc_id = %s", (message, doc_id))
 
 
 def set_gate_results(cur, doc_id: str, gate_results: dict) -> None:
@@ -253,33 +258,40 @@ def set_gate_results(cur, doc_id: str, gate_results: dict) -> None:
     Used by operator.accept_review to stamp an override onto a document whose
     extraction already ran — the normal write path (record_extraction) sets all
     three together, which is wrong here since nothing re-extracted."""
-    cur.execute(queries.SET_GATE_RESULTS, (Json(gate_results), doc_id))
+    cur.execute("UPDATE documents SET gate_results = %s WHERE doc_id = %s", (Json(gate_results), doc_id))
 
 
 def reset_repair_attempts(cur, doc_id: str) -> None:
     """repair_attempts is an inner-loop counter that must reset on each new
     extract_attempt — see '2 · Attempt accounting'."""
-    cur.execute(queries.RESET_REPAIR_ATTEMPTS, (doc_id,))
+    cur.execute("UPDATE documents SET repair_attempts = 0 WHERE doc_id = %s", (doc_id,))
 
 
 def stamp_build_info(cur, doc_id: str, build_sha: str, prompt_version: str) -> None:
     """Records what code/prompt last touched a document — this is what gates
     DLQ replay (see 'DLQ replay — daily, gated, never fully automatic')."""
-    cur.execute(queries.STAMP_BUILD_INFO, (build_sha, prompt_version, doc_id))
+    cur.execute(
+        "UPDATE documents SET build_sha = %s, prompt_version = %s WHERE doc_id = %s",
+        (build_sha, prompt_version, doc_id),
+    )
 
 
 def get_feature_flag(cur, key: str, default: bool = True) -> bool:
     """The auto-post kill switch, and any future flag — a table row instead
     of a LaunchDarkly SDK call, so it can be flipped without a redeploy."""
-    cur.execute(queries.GET_FEATURE_FLAG, (key,))
+    cur.execute("SELECT value FROM feature_flags WHERE key = %s", (key,))
     row = cur.fetchone()
     return row["value"] if row is not None else default
 
 
 def set_feature_flag(cur, key: str, value: bool) -> None:
-    cur.execute(queries.SET_FEATURE_FLAG, (key, value))
+    cur.execute(
+        "INSERT INTO feature_flags (key, value) VALUES (%s, %s) "
+        "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
+        (key, value),
+    )
 
 
 def get_document(cur, doc_id: str) -> dict | None:
-    cur.execute(queries.GET_DOCUMENT, (doc_id,))
+    cur.execute("SELECT * FROM documents WHERE doc_id = %s", (doc_id,))
     return cur.fetchone()

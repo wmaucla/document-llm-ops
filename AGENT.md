@@ -427,9 +427,11 @@ stack, not mocks.
 ## Repo layout
 
 - `docpipeline/core/` — `ledger.py` (state machine + outbox + scatter-gather join),
-  `queries.py` (every SQL statement those two issue, as named constants — split out so the SQL reads as
-  SQL, with the correctness argument for each beside it; `tests/test_sql_safety.py` fails the build if any
-  statement is built by string formatting, or if SQL drifts back inline),
+  `sql/*.sql` + `queries.py` (multi-line statements live in `.sql` files grouped by concept, under
+  `-- name:` markers, loaded eagerly by name; one-liners stay inline at their call site, since an
+  indirection there costs more than it explains). The same split exists in `reconciliation/sql/` and
+  `stages/sql/`. `tests/test_sql_safety.py` enforces the whole arrangement: nothing may build SQL by
+  formatting, multi-line SQL may not sit inline, and `.sql` files may not contain format braces,
   `outbox.py` (polling relay: `SELECT ... FOR UPDATE SKIP LOCKED` batch, publish, mark posted),
   `gates.py` (five deterministic quality gates — see below), `models.py`, `artifact.py` (GCS
   read/write helpers for OCR page text and shard output).

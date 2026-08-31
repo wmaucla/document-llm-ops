@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 
 from docpipeline.core import ledger
+from docpipeline.stages import queries
 from docpipeline.infra import kafka_utils
 
 log = logging.getLogger(__name__)
@@ -19,12 +20,7 @@ CONSUMER_GROUP = "sink-stub"
 
 def handle_document_extracted(cur, payload: dict) -> bool:
     cur.execute(
-        """
-        INSERT INTO posted_documents (doc_id, route, fields)
-        VALUES (%(doc_id)s, %(route)s, %(fields)s)
-        ON CONFLICT (doc_id) DO NOTHING
-        RETURNING doc_id
-        """,
+        queries.POST_DOCUMENT,
         {
             "doc_id": payload["doc_id"],
             "route": payload.get("route", "auto_post"),

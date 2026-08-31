@@ -118,41 +118,68 @@ def test_document_derived_values_are_never_interpolated():
 
 # ── keeping the SQL where it can be read as SQL ──────────────────────────────
 
-QUERIES = PACKAGE / "core" / "queries.py"
+SQL_DIR = PACKAGE / "core" / "sql"
 _SQL_VERBS = ("SELECT ", "INSERT ", "UPDATE ", "DELETE ", "WITH ")
+# A verb alone is not enough: a docstring starting "Delete the ollama pod(s)"
+# trips it. Require a clause keyword too, so it has to actually look like SQL.
+_SQL_CLAUSES = (" FROM ", " INTO ", " SET ", " WHERE ", " VALUES ")
 
 
-def test_every_query_constant_is_a_plain_literal():
-    """queries.py is the one file allowed to hold SQL, so nothing in it may be
-    dynamic — otherwise moving SQL there would launder the very construction
-    this module exists to forbid."""
-    tree = ast.parse(QUERIES.read_text())
-    dynamic = []
-    for node in tree.body:
-        if not isinstance(node, ast.Assign):
-            continue
-        value = node.value
-        # A parenthesised implicit concatenation of literals is still a literal.
-        if isinstance(value, ast.Constant) and isinstance(value.value, str):
-            continue
-        dynamic.append(f"{node.targets[0].id} at line {node.lineno}")
-    assert not dynamic, "non-literal SQL constants in queries.py: " + ", ".join(dynamic)
+def _looks_like_sql(text: str) -> bool:
+    upper = text.upper()
+    return (any(upper.startswith(v) for v in _SQL_VERBS)
+            and any(c in upper for c in _SQL_CLAUSES))
 
 
-def test_core_modules_do_not_inline_sql():
-    """ledger.py and outbox.py call queries.NAME rather than carrying SQL text.
-    Without this the split silently erodes: the next statement gets written
-    inline 'just this once' and the file stops being the place to read the SQL."""
+def test_multi_line_sql_lives_in_sql_files():
+    """The split is by size, not dogma: a one-liner reads fine at its call site,
+    a multi-statement query does not. Without this the boundary erodes -- the
+    next big query gets written inline 'just this once' and sql/ stops being the
+    place to read the SQL."""
     offenders = []
-    for name in ("ledger.py", "outbox.py"):
-        tree = ast.parse((PACKAGE / "core" / name).read_text())
-        for node in ast.walk(tree):
+    for path in sorted(PACKAGE.rglob("*.py")):
+        if path.name == "queries.py":
+            continue
+        for node in ast.walk(ast.parse(path.read_text())):
             if not isinstance(node, ast.Constant) or not isinstance(node.value, str):
                 continue
-            text = node.value.lstrip().upper()
-            if any(text.startswith(v) for v in _SQL_VERBS):
-                offenders.append(f"{name}:{node.lineno} has inline SQL")
+            text = node.value.strip()
+            if "\n" not in text:
+                continue  # one-liners are allowed inline
+            if _looks_like_sql(text):
+                rel = path.relative_to(PACKAGE.parent).as_posix()
+                offenders.append(f"{rel}:{node.lineno}")
     assert not offenders, (
-        "\n  ".join(["SQL found outside queries.py:"] + offenders)
-        + "\n\nAdd it to docpipeline/core/queries.py with the reasoning that makes it correct."
+        "multi-line SQL outside docpipeline/core/sql/: " + ", ".join(offenders)
+        + "\n\nMove it to a sql/*.sql file under a `-- name:` marker, grouped with "
+          "the statements it has to stay consistent with."
     )
+
+
+def test_every_named_statement_loads_and_is_parameterised():
+    """A renamed marker or a missing file must fail loudly. It is the same trap
+    as AGENT.md bug #9 -- a file present in one container and absent in another,
+    degrading silently -- so the loader binds eagerly and this asserts it."""
+    from docpipeline.core import queries
+
+    names = [n for n in dir(queries) if n.isupper() and not n.startswith("_")]
+    assert names, "no SQL statements loaded from sql/"
+    for name in names:
+        stmt = getattr(queries, name)
+        assert stmt.strip(), f"{name} loaded empty"
+        assert "{" not in stmt, f"{name} contains a format brace — SQL must never be formatted"
+
+
+def test_sql_files_use_bound_parameters_only():
+    """Nothing in sql/ may interpolate. They are read verbatim, so a format
+    placeholder there would be a hole the AST check over .py files cannot see."""
+    bad = []
+    for path in sorted(SQL_DIR.glob("*.sql")):
+        text = path.read_text()
+        for line in text.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("--"):
+                continue  # prose, not SQL
+            if "{" in stripped or "}" in stripped:
+                bad.append(f"{path.name}: {stripped[:60]}")
+    assert not bad, "format braces in .sql: " + "; ".join(bad)

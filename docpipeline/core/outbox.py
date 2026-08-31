@@ -84,7 +84,7 @@ def relay_once(conn, producer, batch_cap: int = config.RELAY_BATCH_CAP) -> int:
         # broker failure still rolls back and the rows stay queued.
         ids = [r["id"] for r in rows]
         # arch diagram: "Outbox → sink" — the relay's half, after the ack
-        cur.execute(queries.DELETE_PUBLISHED, (ids,))
+        cur.execute("DELETE FROM outbox WHERE id = ANY(%s)", (ids,))
         conn.commit()
     return len(rows)
 
@@ -94,7 +94,7 @@ def oldest_pending_age_seconds(conn) -> float | None:
     A dead relay stalls the whole pipeline while every other dashboard stays green."""
     with conn.cursor() as cur:
         cur.execute(
-            queries.OLDEST_PENDING_AGE
+            "SELECT extract(epoch from (now() - min(created_at))) AS age FROM outbox"
         )
         row = cur.fetchone()
         return row["age"] if row and row["age"] is not None else None

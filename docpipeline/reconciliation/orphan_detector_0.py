@@ -18,6 +18,7 @@ import time
 
 from docpipeline import config
 from docpipeline.core import ledger
+from docpipeline.reconciliation import queries
 from docpipeline.infra import gcs
 
 log = logging.getLogger(__name__)
@@ -42,10 +43,7 @@ def find_and_enqueue_orphans(cur, prefix: str = INBOX_PREFIX) -> int:
         return 0
 
     cur.execute(
-        """
-        SELECT DISTINCT doc_id FROM outbox
-         WHERE topic = 'triage.requests' AND doc_id = ANY(%s)
-        """,
+        queries.ALREADY_PENDING_TRIAGE,
         ([o[0] for o in orphans],),
     )
     already_pending = {r["doc_id"] for r in cur.fetchall()}

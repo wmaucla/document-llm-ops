@@ -15,6 +15,7 @@ import logging
 
 from docpipeline import config
 from docpipeline.core import ledger
+from docpipeline.reconciliation import queries
 from docpipeline.reconciliation import operator
 
 log = logging.getLogger(__name__)
@@ -22,11 +23,7 @@ log = logging.getLogger(__name__)
 
 def find_replayable(cur) -> list[dict]:
     cur.execute(
-        """
-        SELECT doc_id, build_sha, prompt_version FROM documents
-         WHERE state = 'failed'
-           AND (build_sha IS DISTINCT FROM %s OR prompt_version IS DISTINCT FROM %s)
-        """,
+queries.FIND_REPLAYABLE,
         (config.BUILD_SHA, config.PROMPT_VERSION),
     )
     return cur.fetchall()

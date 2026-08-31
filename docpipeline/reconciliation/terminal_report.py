@@ -30,6 +30,7 @@ import logging
 
 from docpipeline import config
 from docpipeline.core import ledger
+from docpipeline.reconciliation import queries
 
 log = logging.getLogger(__name__)
 
@@ -60,14 +61,7 @@ def collect_state(cur, state: str) -> dict:
     # attempt counts and doc-specific detail, so the full text is near-unique
     # and would group into buckets of one.
     cur.execute(
-        """
-        SELECT left(coalesce(last_error, '(none)'), %s) AS reason, count(*) AS n
-          FROM documents
-         WHERE state = %s
-         GROUP BY reason
-         ORDER BY n DESC
-         LIMIT %s
-        """,
+        queries.TOP_REASONS,
         (ERROR_PREFIX_CHARS, state, TOP_ERRORS),
     )
     reasons = cur.fetchall()
@@ -81,12 +75,7 @@ def collect_state(cur, state: str) -> dict:
     not_replayable = None
     if state == "failed":
         cur.execute(
-            """
-            SELECT count(*) AS n FROM documents
-             WHERE state = 'failed'
-               AND build_sha IS NOT DISTINCT FROM %s
-               AND prompt_version IS NOT DISTINCT FROM %s
-            """,
+            queries.COUNT_NOT_REPLAYABLE,
             (config.BUILD_SHA, config.PROMPT_VERSION),
         )
         not_replayable = cur.fetchone()["n"]
