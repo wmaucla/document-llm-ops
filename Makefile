@@ -1,113 +1,103 @@
-# document-llm-ops — single entrypoint. Every target is a thin alias
-# for `ansible-playbook ansible/site.yml --tags <name>` (see site.yml).
+# document-llm-ops — single entrypoint. Almost every target is a thin alias for
+# `ansible-playbook ansible/site.yml --tags <name>`; each is commented below.
 #
-#   make e2e       fast loop — host-based consumers, mock LLM (steps 0-7)
-#   make e2e-k8s   full loop — K8s Deployments via ArgoCD, KEDA, real LLM,
-#                  destroys + rebuilds the whole cluster (steps 8-9)
+#   make e2e       fast loop — host processes, deterministic extraction, ~15s
+#   make e2e-k8s   full loop — K8s Deployments via ArgoCD, KEDA, real model.
+#                  DESTROYS and rebuilds the whole cluster.
+#   make verify-loop  e2e-k8s, then prove the cluster keeps taking new work
 
 ANSIBLE := ansible-playbook -i ansible/inventory.ini ansible/site.yml
 COUNT ?= 3
 
-.PHONY: help install up down init-db topics fixtures reset run-local test test-real-llm \
+.PHONY: install up down init-db topics fixtures reset run-local test test-real-llm \
         cluster-rebuild image keda-install deploy undeploy k8s-status canary dlq-replay \
         deadmans-switch terminal-report prune summary summary-k8s replay-docs e2e e2e-k8s verify-loop
 
-help:
-	@echo "make install       uv sync the project (no manual venv — uv run handles the rest)"
-	@echo "make up            docker compose up (Postgres/Redpanda/fake-gcs-server)"
-	@echo "make down          docker compose down"
-	@echo "make init-db       apply migrations/*.sql"
-	@echo "make reset         truncate ledger, clear GCS, wipe Redpanda"
-	@echo "make topics        create every Kafka topic"
-	@echo "make fixtures      generate + upload the 14 fixtures"
-	@echo "make run-local     run all consumers as host processes (mock LLM, fast)"
-	@echo "make test          run the pytest suite (mock mode, ~3s)"
-	@echo "make test-real-llm run the opt-in real-LLM integration test (needs port-forward, slow)"
-	@echo "make cluster-rebuild  DESTRUCTIVE: minikube delete + start, then rebuild the sibling"
-	@echo "                   mlops-llm-repo's entire stack (ArgoCD/Ollama/LiteLLM/Langfuse) via"
-	@echo "                   its own terraform apply. Runs automatically as part of e2e-k8s."
-	@echo "make image         build the docpipeline image into minikube's docker daemon"
-	@echo "make keda-install  apply the KEDA ArgoCD Application, then 'argocd app sync keda'"
-	@echo "make deploy        apply the ArgoCD Application, then 'argocd app sync --local ./k8s'"
-	@echo "make undeploy      remove everything make deploy created"
-	@echo "make k8s-status    show docpipeline pods + ScaledObjects"
-	@echo "make canary        inject + track one synthetic document end to end"
-	@echo "make dlq-replay    re-drive failed docs whose build_sha/prompt_version changed"
-	@echo "make deadmans-switch  check for total silence (exits 1 if unhealthy)"
-	@echo "make terminal-report  ad-hoc run of the failed/review summary the daily CronJob runs"
-	@echo "make prune         ad-hoc retention pass (outbox + attempt_log); --dry-run in the module"
-	@echo "make summary       per-document state report against the HOST (docker-compose) Postgres"
-	@echo "make summary-k8s   the in-cluster equivalent -- checks the k8s cluster's own Postgres,"
-	@echo "                   not the host one. Standalone, safe to run any time."
-	@echo "make replay-docs   inject COUNT (default 3) fresh docs into an already-running cluster,"
-	@echo "                   no redeploy -- make replay-docs COUNT=10 to override"
-	@echo "make e2e           fast end-to-end run: reset -> fixtures -> host consumers -> test"
-	@echo "make e2e-k8s       full end-to-end run: DESTROYS + rebuilds the whole minikube cluster,"
-	@echo "                   then image -> ArgoCD deploy (in-cluster infra, migrate/topics/fixtures"
-	@echo "                   Jobs, app tier, KEDA, monitoring, all one sync) -> canary (~15-20 min)"
-	@echo "make verify-loop   the human verification loop: e2e-k8s -> summary-k8s -> replay-docs ->"
-	@echo "                   summary-k8s again, proving the cluster keeps taking new work after the"
-	@echo "                   initial deploy, not just once -- then dlq-replay + dead man's switch,"
-	@echo "                   the two reconciliation lanes nothing else covers live."
-	@echo "                   COUNT=N to replay more than 3."
-
+# uv sync the project. No manual venv — uv run handles the rest.
 install:
 	uv sync --extra dev
 
+# docker compose up: Postgres/Redpanda/fake-gcs-server. Host mode only;
+# e2e-k8s runs its own copies of these in-cluster (k8s/templates/infra.yaml).
 up:
 	$(ANSIBLE) --tags up
 
+# docker compose down. Note `make test` needs these running.
 down:
 	$(ANSIBLE) --tags down
 
+# Apply migrations/*.sql to the host database.
 init-db:
 	$(ANSIBLE) --tags init-db
 
+# Truncate the ledger, clear GCS, recreate Redpanda. Host mode only —
+# e2e-k8s gets empty state for free from `minikube delete`.
 reset:
 	$(ANSIBLE) --tags reset
 
+# Create every Kafka topic. Idempotent.
 topics:
 	$(ANSIBLE) --tags topics
 
+# Generate + upload all 14 fixtures. e2e-k8s uploads only 4 (see
+# k8s/templates/jobs.yaml) because they contend for one Ollama pod.
 fixtures:
 	$(ANSIBLE) --tags fixtures
 
+# All consumers as host processes, deterministic extraction. Backgrounded by
+# ansible elsewhere; run directly here so Ctrl-C actually kills the group.
 run-local:
 	set -a && . ./.env && set +a && uv run python3 local_scripts/run_local.py
 
+# The pytest suite against real Postgres + fake-GCS from docker-compose.
+# conftest forces the deterministic backend, so it never calls a model.
 test:
 	set -a && . ./.env && set +a && uv run pytest tests/ -v --timeout=60 -k "not real_llm"
 
+# Opt-in, slow, needs a port-forward. Excluded from `make test` by -k.
 test-real-llm:
 	@echo "needs: kubectl port-forward svc/litellm 4000:4000 &  (separately, left running)"
 	set -a && . ./.env && set +a && RUN_REAL_LLM_TESTS=1 uv run pytest tests/test_real_llm_integration.py -v -s --timeout=300
 
+# DESTRUCTIVE: minikube delete + start, then rebuild the sibling repo's whole
+# stack via its own terraform. Runs automatically as part of e2e-k8s.
 cluster-rebuild:
 	$(ANSIBLE) --tags cluster-rebuild
 
+# Build the docpipeline image into minikube's docker daemon (never pulled).
 image:
 	$(ANSIBLE) --tags image
 
+# Apply the KEDA ArgoCD Application, then sync it from kedacore's chart.
 keda-install:
 	$(ANSIBLE) --tags keda-install
 
+# Apply the docpipeline Application, then `argocd app sync --local ./k8s`.
+# Reads the working tree, so don't edit k8s/ while this runs.
 deploy:
 	$(ANSIBLE) --tags deploy
 
+# `argocd app delete --cascade` — removes exactly what deploy created.
 undeploy:
 	$(ANSIBLE) --tags undeploy
 
+# Pods, ScaledObjects and Application health at a glance.
 k8s-status:
-	kubectl get pods -l 'app in (docpipeline-triage,docpipeline-pdf-worker,docpipeline-ocr-shard,docpipeline-extraction,docpipeline-sink-stub,docpipeline-outbox-relay,docpipeline-sweeper,docpipeline-orphan-detector)'
+	kubectl get pods -l 'app in (docpipeline-triage,docpipeline-pdf-worker,docpipeline-ocr-shard,docpipeline-extraction,docpipeline-sink-stub,docpipeline-outbox-relay,docpipeline-sweeper,docpipeline-orphan-detector,docpipeline-gpu-watchdog)'
 	kubectl get scaledobject
 	kubectl get application docpipeline -n argocd
 
+# Inject one synthetic document and track it end to end against its SLO.
 canary:
 	$(ANSIBLE) --tags canary
 
+# Re-drive `failed` documents whose build_sha/prompt_version has moved.
+# Deliberately not scheduled: re-running the same code would fail identically.
 dlq-replay:
 	$(ANSIBLE) --tags dlq-replay
 
+# Check for total silence. Exits 1 if unhealthy. Also runs every 15 min as a
+# CronJob — a switch that only fires when someone remembers it is not one.
 deadmans-switch:
 	$(ANSIBLE) --tags deadmans-switch
 
@@ -120,6 +110,7 @@ terminal-report:
 prune:
 	$(ANSIBLE) --tags prune
 
+# Per-document state report against the HOST database.
 summary:
 	$(ANSIBLE) --tags summary
 
@@ -138,6 +129,7 @@ summary-k8s:
 replay-docs:
 	$(ANSIBLE) --tags replay -e replay_count=$(COUNT)
 
+# Fast loop: reset -> fixtures -> host consumers -> drain -> test. ~15s.
 e2e:
 	$(ANSIBLE) --tags reset,e2e
 

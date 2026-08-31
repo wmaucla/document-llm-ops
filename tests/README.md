@@ -20,3 +20,10 @@ One test per real hazard, not per function:
 See `presentations/llmops-document-pipeline-workflow.html`'s "Proven end-to-end" section for the
 fixture table showing what the *host-mode `make e2e` run* proves end to end — this directory is
 the unit/integration layer underneath it, not a replacement for it.
+
+| file | what it pins down |
+|---|---|
+| `test_sql_safety.py` | Structural, by AST: no SQL may be built by string formatting, the two allowlisted interpolations must still exist and must never touch a model-produced value, and multi-line SQL must live in `sql/*.sql` |
+| `test_gpu_watchdog.py` | `/api/ps` classification and the heal/cooldown cycle, without a GPU |
+| `test_relay_delivery.py` | The relay must not mark a message delivered when `flush()` reports it unsent |
+| `test_prune.py` | `attempt_log` retention, including that undated rows are swept by id watermark rather than left forever |

@@ -57,7 +57,7 @@ ansible/                      the sole orchestration layer — ansible/README.md
 presentations/                a scrollytelling architecture walkthrough (open the .html directly)
 Dockerfile                    builds the image make image loads into minikube's docker daemon
 docker-compose.yml             Postgres/Redpanda/fake-gcs-server — make e2e (host mode) only
-Makefile                      the single entrypoint — make help for the full command list
+Makefile                      the single entrypoint — every target commented in place
 AGENT.md                      implementation gotchas, mechanics, open bugs (current-state)
 HISTORY.md                    session-by-session log of past debugging and build work
 ```
@@ -80,7 +80,7 @@ make e2e                     # up, init-db, topics, fixtures, run consumers, dra
 Every Makefile target that runs Python does so via `uv run` — prefix anything you run by hand the
 same way, e.g. `uv run pytest tests/ -v` or `uv run python3 -m docpipeline.stages.triage_1`.
 
-`make help` lists every target. The two end-to-end paths:
+Every target carries a comment in the Makefile. The two end-to-end paths:
 
 - **`make e2e`** — fast loop, host processes, mock LLM, docker-compose infra. Steps 0–7's
   correctness core. ~15s.

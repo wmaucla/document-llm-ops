@@ -17,3 +17,5 @@ mock-OCR ground-truth registry.
 **Ordering gotcha:** fixture generation must happen *before* the K8s image is built for
 `make e2e-k8s`, not after — the mock-OCR registry is baked into the image at build time. If you
 regenerate fixtures after `make image`, rebuild the image again before redeploying.
+
+`content.py` holds the shared invoice text blocks both this generator and the tests build on — moved here from `docpipeline/` because no production module imports it.

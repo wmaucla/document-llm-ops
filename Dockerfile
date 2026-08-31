@@ -15,9 +15,17 @@ RUN apt-get update && apt-get install --no-install-recommends -y \
 
 WORKDIR /app
 
-COPY pyproject.toml ./
-# --system: no venv, since every Deployment's command is a bare `python -m ...`.
-RUN uv pip install --system --no-cache .
+COPY pyproject.toml uv.lock ./
+# --frozen installs exactly what uv.lock pins and never re-resolves: `uv pip
+# install .` read only pyproject's constraints (>=3.1, >=0.27, ...), so an image
+# rebuilt tomorrow could ship different versions than `uv run` uses on the host,
+# which is how "works locally, fails in cluster" starts. --no-install-project
+# keeps this layer cached until the lock changes; the source is copied below and
+# imported from WORKDIR. --no-dev leaves pytest and friends out of the image.
+RUN uv sync --frozen --no-dev --no-install-project
+
+# Deployments run a bare `python -m ...`, so the venv has to be on PATH.
+ENV PATH="/app/.venv/bin:$PATH"
 
 COPY docpipeline docpipeline/
 COPY fixtures fixtures/

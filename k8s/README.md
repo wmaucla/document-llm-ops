@@ -12,7 +12,9 @@ templates/
   configmap.yaml             docpipeline-config — wave -1
   infra.yaml                 Postgres/Redpanda/fake-gcs-server — wave -1
   jobs.yaml                  migrate/topics/fixtures one-off Jobs — wave 0
-  deployment.yaml             the 8 app-tier Deployments (+ optional metrics Service) — wave 1
+  deployment.yaml             the 9 app-tier Deployments (+ optional metrics Service) — wave 1
+  cronjobs.yaml              terminal-report / prune / dead man's switch — wave 1
+  rbac.yaml                  ServiceAccount+Role+RoleBinding for gpu-watchdog — wave 0
   keda.yaml                  2 ScaledObjects (ocr-shard, extraction) — wave 2
   monitoring.yaml             Prometheus + Grafana — wave -1
 ```

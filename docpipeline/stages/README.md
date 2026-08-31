@@ -16,6 +16,7 @@ steps — `deterministic_extractor.py`, `llm_client.py` — stay unnumbered. Sha
 | `extraction_4.py` | 3 | The extraction funnel: mock → cheap → strong tiers, each result checked by all five quality gates before anything auto-posts. First-writer-wins on commit. KEDA-scaled 1–3. |
 | `sink_stub_5.py` | 4 | The downstream contract's local stand-in — consumes `document.extracted` and does the final write. |
 | `deterministic_extractor.py` | — | The default extraction backend (steps 0–7's deterministic path) — a real component with programmable per-scenario behaviors (`injected_total`, `swapped_roles`, `refusal`, `context_overflow`), not a stub. |
+| `queries.py` + `sql/` | The one multi-line statement these stages issue (`post_document`), loaded from `sql/sink.sql` by its `-- name:` marker. One-liners stay inline |
 | `llm_client.py` | — | The real LLM tier (step 8) — calls the sibling repo's LiteLLM gateway. Passes `metadata.trace_id=doc_id` on every call so tier/repair attempts land on one Langfuse trace, and `push_gate_scores()` attaches this repo's own gate outcomes to that trace afterward. |
 
 Every `python -m docpipeline.stages.<name>` invocation (`k8s/values.yaml`'s `services:` list,
