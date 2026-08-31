@@ -292,15 +292,29 @@ stays current-state only.
    `e2e`/`e2e-k8s` is in `ansible_run_tags`; standalone runs print `⏳ IN PROGRESS` and exit 0.
    **If you see `RUN INCOMPLETE`, check timestamps against the extraction log before concluding
    anything is stuck** — this class of false alarm has now cost two separate investigations.
-7. **Canary `arithmetic`-gate false positive under `EXTRACTION_MODE=real` — not fixed.** The
-   canary's synthetic document sometimes has its total extracted as negative by the real small
-   model (`computed=100, declared=-100`), tripping the gate and landing the canary in `review`
-   instead of `complete`. Confirmed *not* a line-item delimiter ambiguity (that hypothesis was
-   fixed and then disproven by re-test); the surviving hypothesis is `llm_client.py`'s prompt
-   instruction (`total_cents (integer, negative for credit memos)`) being over-applied by the small
-   model. Currently absorbed, not fixed: `canary.py`'s `run_canary()` treats `review` as a valid
-   pass condition when `EXTRACTION_MODE=real` (mock mode still requires `complete`, since mock
-   extraction is deterministic and `review` there means something is actually broken).
+7. **Fixed 2026-08-31 — the `arithmetic`-gate "false positive" was a prompt defect, and the gate
+   was right every time.** The real small model returned totals with the correct magnitude and an
+   inverted sign (`computed=800, declared=-800`), tripping the gate. Long treated as an
+   intermittent canary quirk and absorbed rather than fixed.
+
+   It is not intermittent and it was never canary-specific. Once bug #9's fix let OCR documents
+   carry real text, it reproduced on three real fixtures at once, every one an exact negation.
+   Cause confirmed by A/B, same model and documents with the prompt as the only variable:
+   **12/12 extractions negative under the v1 prompt, 0/12 under the revision.** v1 said
+   `total_cents (integer, negative for credit memos)` — it stated when to go negative and never
+   stated the default, and the 1B model applied it universally. The prompt now names the default
+   sign explicitly.
+
+   Two things to keep in mind here. `config.PROMPT_VERSION` is bumped to `invoice-extract@v2`
+   alongside the wording — `dlq_replay` re-drives documents whose `prompt_version` changed, so
+   editing a prompt without bumping it makes old and new extractions indistinguishable. And
+   `canary.py`'s `run_canary()` still treats `review` as a pass under `EXTRACTION_MODE=real`; that
+   absorption was a workaround for *this* bug and is now a candidate for removal, but it should
+   only go once a few clean runs confirm the canary reaches `complete` on its own.
+
+   **The general lesson:** this sat open for sessions as "the gate is wrong," when the gate was
+   correctly reporting that the model's declared total disagreed with its own line items. A
+   deterministic check disagreeing with a model is evidence about the model first.
 
    **`review` rate is environment-dependent, not a property of the document — established by a
    failed prediction, 2026-08-31.** `local_scripts/replay_docs.py` builds every document with

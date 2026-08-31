@@ -116,7 +116,12 @@ MAX_REPAIR_ATTEMPTS = _int("MAX_REPAIR_ATTEMPTS", 2)
 FUNNEL_VERSION = _int("FUNNEL_VERSION", 1)
 GATE_SET_VERSION = _int("GATE_SET_VERSION", 1)
 BUILD_SHA = os.environ.get("BUILD_SHA", "local-dev")
-PROMPT_VERSION = os.environ.get("PROMPT_VERSION", "invoice-extract@v1")
+# v2 (2026-08-31): total_cents states the default sign. v1 said only "negative
+# for credit memos", which the 1B model applied universally -- 12/12 extractions
+# came back sign-flipped, tripping the arithmetic gate. Bump this on every
+# prompt change: dlq_replay re-drives documents whose prompt_version moved, so a
+# silent edit makes old and new extractions indistinguishable.
+PROMPT_VERSION = os.environ.get("PROMPT_VERSION", "invoice-extract@v2")
 
 PLAUSIBLE_TOTAL_CEILING_CENTS = _int("PLAUSIBLE_TOTAL_CEILING_CENTS", 10_000_000_00)
 
