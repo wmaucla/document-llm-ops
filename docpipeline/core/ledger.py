@@ -77,6 +77,8 @@ def transition(cur, doc_id: str, to_state: str, *, from_states: set[str] | None 
     if from_states is None:
         from_states = {frm for (frm, to) in ALLOWED_TRANSITIONS if to == to_state}
     allowed = set(from_states) | ({to_state} if idempotent else set())
+    # arch diagram: "Postgres ledger" — every state move in the system is this
+    # one guarded statement.
     cur.execute(
         """
         UPDATE documents
@@ -94,6 +96,7 @@ def transition(cur, doc_id: str, to_state: str, *, from_states: set[str] | None 
 
 def enqueue(cur, doc_id: str, topic: str, payload: dict, headers: dict | None = None) -> None:
     cur.execute(
+        # arch diagram: "Outbox → sink" — written in the caller's transaction.
         "INSERT INTO outbox (doc_id, topic, payload, headers) VALUES (%s, %s, %s, %s)",
         (doc_id, topic, Json(payload), Json(headers) if headers else None),
     )
@@ -105,6 +108,7 @@ def enqueue_many(cur, rows: list[tuple[str, str, dict]]) -> None:
     if not rows:
         return
     cur.executemany(
+        # arch diagram: "Outbox → sink" — the fan-out case (N shard messages).
         "INSERT INTO outbox (doc_id, topic, payload) VALUES (%s, %s, %s)",
         [(doc_id, topic, Json(payload)) for doc_id, topic, payload in rows],
     )
@@ -157,6 +161,7 @@ def insert_initial_document(
     machine'). Returns False if the row already exists (checksum dedupe)."""
     cur.execute(
         """
+        -- arch diagram: "Triage" creating the row in "Postgres ledger"
         INSERT INTO documents (doc_id, gcs_path, state, page_count, has_text_layer,
                                 priority, shards_total, last_error, doc_type)
         VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
@@ -174,6 +179,7 @@ def record_shard_and_maybe_join(cur, doc_id: str, shard_idx: int, completed_payl
     lock, never SELECT count(*) — see 'Detecting completion'."""
     cur.execute(
         """
+        -- arch diagram: "Scatter-gather join", step 1 of 2 — claim this shard
         INSERT INTO document_shards (doc_id, shard_idx)
         VALUES (%s, %s)
         ON CONFLICT (doc_id, shard_idx) DO NOTHING
@@ -186,6 +192,8 @@ def record_shard_and_maybe_join(cur, doc_id: str, shard_idx: int, completed_payl
 
     cur.execute(
         """
+        -- arch diagram: "Scatter-gather join", step 2 of 2 — increment and
+        -- compare under one row lock; whoever reads done == total has won
         UPDATE documents SET shards_done = shards_done + 1
          WHERE doc_id = %s
         RETURNING shards_done, shards_total
@@ -219,6 +227,7 @@ def commit_extraction_result(
     cur.execute(
         """
         UPDATE documents
+           -- arch diagram: the write after "5 quality gates" — first writer wins
            SET extraction_result = %s, gate_results = %s, state = %s, state_updated_at = now()
          WHERE doc_id = %s AND extraction_result IS NULL
         RETURNING doc_id
@@ -238,6 +247,7 @@ def route_without_writing(cur, doc_id: str, gate_results: dict, final_state: str
     cur.execute(
         """
         UPDATE documents
+           -- arch diagram: "5 quality gates" routing to the review pill
            SET gate_results = %s, state = %s, state_updated_at = now()
          WHERE doc_id = %s
         RETURNING doc_id
@@ -270,8 +280,17 @@ def log_attempt(
     )
 
 
+_ATTEMPT_COLUMNS = ("text_attempts", "extract_attempts", "repair_attempts")
+
+
 def increment_attempts(cur, doc_id: str, column: str) -> int:
-    assert column in ("text_attempts", "extract_attempts", "repair_attempts")
+    # The only interpolated identifier in this module. A column name cannot be a
+    # bound parameter, so it is allowlisted instead -- and with an explicit
+    # raise, not an assert, because asserts vanish under `python -O` and would
+    # take the guard with them. Every caller passes a literal; nothing
+    # document-derived reaches here.
+    if column not in _ATTEMPT_COLUMNS:
+        raise ValueError(f"not an attempt column: {column!r}")
     cur.execute(
         f"UPDATE documents SET {column} = {column} + 1 WHERE doc_id = %s RETURNING {column}",
         (doc_id,),

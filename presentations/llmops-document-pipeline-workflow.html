@@ -322,7 +322,7 @@ footer.close a{color:var(--ink-dim);}
         <div class="lg"><span class="sw d-async"></span>reconciliation &middot; async</div>
       </div>
       <div class="diagram-hint">Click any box for detail</div>
-      <svg id="archSvg" viewBox="0 0 560 748" preserveAspectRatio="xMidYMid meet" role="img"
+      <svg id="archSvg" viewBox="0 0 560 776" preserveAspectRatio="xMidYMid meet" role="img"
            aria-label="Architecture diagram, vertical layout, four stacked bands inside a Kubernetes cluster boundary, fed from two external boxes above it: Ansible plus ArgoCD, which provisions and deploys everything, and 14 fixture PDFs as the upload source. Band one, ingest and ledger: orphan detector, triage, Postgres ledger, left to right. Band two, fan-out and join: PDF worker, then three separate OCR shard replica boxes drawn stacked, each with its own curved arrow fanning out from PDF worker and its own curved arrow gathering into the scatter-gather join (a KEDA range of 1 to 5 is shown as a small badge below the three boxes, since only three are drawn). The PDF worker is also a fork point: a document with an existing text layer skips straight down to the extraction funnel; a document needing OCR goes right to the OCR shard replicas and the join, which also feeds down into the extraction funnel. Band three, extraction and gates: the extraction funnel (a stack-of-replicas illustration, KEDA-scaled 1 to 3) with its two model tiers drawn beside it as a vertical cascade -- cheap-fast (llama3.2:1b) first, escalating to cheap-balanced (qwen2.5:1.5b) only when a blocking gate rejects the cheap result, and to review when both are exhausted -- five quality gates, and the outbox to sink (a fixed stack of 2 replicas). Band four, a dashed reconciliation strip listing three execution models: Deployments (sweeper, orphan detector, GPU watchdog), CronJobs (terminal report, prune, dead man's switch), and on-demand lanes (DLQ replay, canary), labelled async and no Kafka. Every node's icon and title sit centered in the box by default; clicking a node moves them to the top and reveals its detail line below. Two alternate paths are drawn alongside the happy path, each ending in a small labeled pill, not a dangling line: triage can route a bad upload straight to a failed or review pill without touching the rest of the pipeline, and the extraction funnel exhausting its gates routes to a review pill the same way. The gates have exactly two outputs: the unlabelled arrow onward to the outbox is the path taken when every blocking gate passes, and a labelled branch reading 'a blocking gate fails' routes to a review pill. The reconciliation band is not fed by the pipeline at all; it is labelled as reading the ledger and never Kafka. A curved dashed loop shows it redriving review, failed and stuck documents back into the extraction funnel.">
         <defs>
           <marker id="a-g" markerWidth="8" markerHeight="8" refX="6.2" refY="4" orient="auto">
@@ -501,7 +501,7 @@ footer.close a{color:var(--ink-dim);}
              redrive review/failed/stuck documents straight back into the
              extraction funnel -- reconciliation isn't a one-way drain. -->
         <g data-key="edgeRedrive">
-          <path d="M 100 630 Q 73 605 100 580" fill="none" stroke="#94A3B8" stroke-width="1.6" stroke-dasharray="5 4" stroke-linecap="round" marker-end="url(#a-g)"/>
+          <path d="M 100 656 Q 73 618 100 580" fill="none" stroke="#94A3B8" stroke-width="1.6" stroke-dasharray="5 4" stroke-linecap="round" marker-end="url(#a-g)"/>
           <text x="15" y="598" font-size="7" fill="#94A3B8">redriven &rarr; extract_pending</text>
         </g>
 
@@ -524,7 +524,7 @@ footer.close a{color:var(--ink-dim);}
         </g>
 
         <!-- ══ KUBERNETES CLUSTER · the background everything else deploys onto ══ -->
-        <rect data-key="clusterBoundary" x="6" y="76" width="548" height="656" rx="20" fill="rgba(96,165,250,0.04)" stroke="#60A5FA" stroke-width="2.2" stroke-dasharray="10 6"/>
+        <rect data-key="clusterBoundary" x="6" y="76" width="548" height="682" rx="20" fill="rgba(96,165,250,0.04)" stroke="#60A5FA" stroke-width="2.2" stroke-dasharray="10 6"/>
         <rect data-key="clusterBoundary" x="20" y="64" width="270" height="20" rx="7" fill="#0F172A"/>
         <use data-key="clusterBoundary" href="#ic-cube" x="26" y="68" width="14" height="14" class="ic" color="#60A5FA" stroke="#60A5FA"/>
         <text data-key="clusterBoundary" x="46" y="78" font-size="9.5" font-weight="800" letter-spacing="0.07em" fill="#60A5FA">MINIKUBE &middot; ARGOCD-MANAGED</text>
@@ -622,18 +622,6 @@ footer.close a{color:var(--ink-dim);}
             <text x="82" y="598" font-size="7.5" font-weight="700" fill="#FBBF24" text-anchor="middle">&times;1&ndash;3 &middot; KEDA</text>
           </g>
 
-          <!-- Tiers as one horizontal line under the band. They are a
-               different axis from the three boxes above (those are KEDA
-               replicas), and every document walks the same order -- so a
-               cascade, not a fork, and not one model per replica. -->
-          <text x="20" y="617" font-size="6.5" font-weight="800" letter-spacing="0.05em" fill="#64748B">TIERS</text>
-          <text x="50" y="617" font-size="6.5" font-weight="700" fill="#4ADE80">1 &middot; cheap-fast</text>
-          <text x="106" y="617" font-size="6.5" fill="#94A3B8">llama3.2:1b</text>
-          <text x="156" y="617" font-size="6.5" fill="#FBBF24">&rarr; on gate reject &rarr;</text>
-          <text x="232" y="617" font-size="6.5" font-weight="700" fill="#60A5FA">2 &middot; cheap-balanced</text>
-          <text x="312" y="617" font-size="6.5" fill="#94A3B8">qwen2.5:1.5b</text>
-          <text x="366" y="617" font-size="6.5" fill="#94A3B8">&rarr; both exhausted &rarr;</text>
-          <text x="442" y="617" font-size="6.5" font-weight="700" fill="#FBBF24">review</text>
         </g>
         <g data-key="gatesNode" class="clickable">
           <rect class="box" x="205" y="494" width="160" height="68" rx="14" fill="rgba(96,165,250,0.08)" stroke="#60A5FA" stroke-width="1.4"/>
@@ -659,6 +647,35 @@ footer.close a{color:var(--ink-dim);}
           </g>
         </g>
 
+        <!-- ══ MODEL TIERS ══ A different axis from the three funnel boxes
+             above, which are KEDA replicas. Every document walks this order;
+             it is a cascade on failure, not a router on document type. -->
+        <g data-key="tierNode">
+          <rect x="15" y="610" width="530" height="32" rx="10" fill="rgba(96,165,250,0.05)" stroke="#3B5B87" stroke-width="1.2"/>
+          <text x="28" y="622" font-size="7.5" font-weight="800" letter-spacing="0.06em" fill="#64748B">MODEL TIERS</text>
+          <text x="28" y="634" font-size="6.2" fill="#64748B">every doc starts at 1</text>
+
+          <rect x="108" y="616" width="104" height="20" rx="6" fill="rgba(74,222,128,0.10)" stroke="#4ADE80" stroke-width="1"/>
+          <text x="115" y="624" font-size="6.8" font-weight="700" fill="#4ADE80">1 &middot; cheap-fast</text>
+          <text x="115" y="633" font-size="6.2" fill="#94A3B8">llama3.2:1b</text>
+
+          <path d="M 216 626 L 240 626" stroke="#FBBF24" stroke-width="1.3" marker-end="url(#a-amber)"/>
+          <text x="228" y="621" font-size="5.8" fill="#FBBF24" text-anchor="middle">gate rejects</text>
+
+          <rect x="244" y="616" width="116" height="20" rx="6" fill="rgba(96,165,250,0.10)" stroke="#60A5FA" stroke-width="1"/>
+          <text x="251" y="624" font-size="6.8" font-weight="700" fill="#60A5FA">2 &middot; cheap-balanced</text>
+          <text x="251" y="633" font-size="6.2" fill="#94A3B8">qwen2.5:1.5b</text>
+
+          <path d="M 364 626 L 388 626" stroke="#FBBF24" stroke-width="1.3" marker-end="url(#a-amber)"/>
+          <text x="376" y="621" font-size="5.8" fill="#FBBF24" text-anchor="middle">exhausted</text>
+
+          <rect x="392" y="618" width="52" height="16" rx="8" fill="rgba(251,191,36,0.12)" stroke="#FBBF24" stroke-width="1"/>
+          <text x="418" y="629" font-size="7" font-weight="700" fill="#FBBF24" text-anchor="middle">review</text>
+
+          <text x="454" y="623" font-size="6" fill="#64748B">EXTRACTION_MODE=mock</text>
+          <text x="454" y="632" font-size="6" fill="#64748B">stubs out both tiers</text>
+        </g>
+
         <!-- ══ BAND 4 (in-cluster, async) · RECONCILIATION ══
              Three execution models, kept visually separate because the
              distinction is the design: Deployments own a loop (sub-minute
@@ -666,34 +683,34 @@ footer.close a{color:var(--ink-dim);}
              two lanes are invoked deliberately. None consumes a Kafka topic --
              the bus is one of the things this tier recovers from. -->
         <g data-key="reconcileNode">
-          <rect class="box" x="15" y="626" width="530" height="92" rx="12" fill="rgba(100,116,139,0.06)" stroke="#64748B" stroke-width="1.4" stroke-dasharray="5 4"/>
-          <text x="28" y="643" font-size="8.5" font-weight="800" letter-spacing="0.07em" fill="#94A3B8">RECONCILIATION</text>
-          <text x="532" y="643" font-size="7.5" fill="#64748B" text-anchor="end">reads the ledger &middot; never Kafka</text>
+          <rect class="box" x="15" y="652" width="530" height="92" rx="12" fill="rgba(100,116,139,0.06)" stroke="#64748B" stroke-width="1.4" stroke-dasharray="5 4"/>
+          <text x="28" y="669" font-size="8.5" font-weight="800" letter-spacing="0.07em" fill="#94A3B8">RECONCILIATION</text>
+          <text x="532" y="669" font-size="7.5" fill="#64748B" text-anchor="end">reads the ledger &middot; never Kafka</text>
 
           <g>
-            <rect x="26" y="652" width="164" height="56" rx="8" fill="rgba(96,165,250,0.06)" stroke="#60A5FA" stroke-width="1"/>
-            <text x="36" y="666" font-size="7.5" font-weight="800" fill="#60A5FA">Deployments</text>
-            <text x="36" y="678" font-size="6.8" fill="#CBD5E1">sweeper</text>
-            <text x="36" y="688" font-size="6.8" fill="#CBD5E1">orphan detector</text>
-            <text x="36" y="698" font-size="6.8" fill="#CBD5E1">GPU watchdog</text>
-            <text x="182" y="666" font-size="6" fill="#64748B" text-anchor="end">10-30s loop</text>
+            <rect x="26" y="678" width="164" height="56" rx="8" fill="rgba(96,165,250,0.06)" stroke="#60A5FA" stroke-width="1"/>
+            <text x="36" y="692" font-size="7.5" font-weight="800" fill="#60A5FA">Deployments</text>
+            <text x="36" y="704" font-size="6.8" fill="#CBD5E1">sweeper</text>
+            <text x="36" y="714" font-size="6.8" fill="#CBD5E1">orphan detector</text>
+            <text x="36" y="724" font-size="6.8" fill="#CBD5E1">GPU watchdog</text>
+            <text x="182" y="692" font-size="6" fill="#64748B" text-anchor="end">10-30s loop</text>
           </g>
 
           <g>
-            <rect x="198" y="652" width="164" height="56" rx="8" fill="rgba(74,222,128,0.06)" stroke="#4ADE80" stroke-width="1"/>
-            <text x="208" y="666" font-size="7.5" font-weight="800" fill="#4ADE80">CronJobs</text>
-            <text x="208" y="678" font-size="6.8" fill="#CBD5E1">terminal report</text>
-            <text x="208" y="688" font-size="6.8" fill="#CBD5E1">prune</text>
-            <text x="208" y="698" font-size="6.8" fill="#CBD5E1">dead man's switch</text>
-            <text x="354" y="666" font-size="6" fill="#64748B" text-anchor="end">scheduled</text>
+            <rect x="198" y="678" width="164" height="56" rx="8" fill="rgba(74,222,128,0.06)" stroke="#4ADE80" stroke-width="1"/>
+            <text x="208" y="692" font-size="7.5" font-weight="800" fill="#4ADE80">CronJobs</text>
+            <text x="208" y="704" font-size="6.8" fill="#CBD5E1">terminal report</text>
+            <text x="208" y="714" font-size="6.8" fill="#CBD5E1">prune</text>
+            <text x="208" y="724" font-size="6.8" fill="#CBD5E1">dead man's switch</text>
+            <text x="354" y="692" font-size="6" fill="#64748B" text-anchor="end">scheduled</text>
           </g>
 
           <g>
-            <rect x="370" y="652" width="164" height="56" rx="8" fill="rgba(251,191,36,0.06)" stroke="#FBBF24" stroke-width="1"/>
-            <text x="380" y="666" font-size="7.5" font-weight="800" fill="#FBBF24">on demand</text>
-            <text x="380" y="678" font-size="6.8" fill="#CBD5E1">DLQ replay</text>
-            <text x="380" y="688" font-size="6.8" fill="#CBD5E1">canary</text>
-            <text x="526" y="666" font-size="6" fill="#64748B" text-anchor="end">invoked</text>
+            <rect x="370" y="678" width="164" height="56" rx="8" fill="rgba(251,191,36,0.06)" stroke="#FBBF24" stroke-width="1"/>
+            <text x="380" y="692" font-size="7.5" font-weight="800" fill="#FBBF24">on demand</text>
+            <text x="380" y="704" font-size="6.8" fill="#CBD5E1">DLQ replay</text>
+            <text x="380" y="714" font-size="6.8" fill="#CBD5E1">canary</text>
+            <text x="526" y="692" font-size="6" fill="#64748B" text-anchor="end">invoked</text>
           </g>
         </g>
       </svg>

@@ -91,6 +91,7 @@ def relay_once(conn, producer, batch_cap: int = config.RELAY_BATCH_CAP) -> int:
         # flush() confirmed delivery and inside the same transaction, so a
         # broker failure still rolls back and the rows stay queued.
         ids = [r["id"] for r in rows]
+        # arch diagram: "Outbox → sink" — the relay's half, after the ack
         cur.execute("DELETE FROM outbox WHERE id = ANY(%s)", (ids,))
         conn.commit()
     return len(rows)
