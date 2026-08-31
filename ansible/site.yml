@@ -16,7 +16,7 @@
     docpipeline_apps: >-
       app in (docpipeline-triage,docpipeline-pdf-worker,docpipeline-ocr-shard,
       docpipeline-extraction,docpipeline-sink-stub,docpipeline-outbox-relay,
-      docpipeline-sweeper,docpipeline-orphan-detector)
+      docpipeline-sweeper,docpipeline-orphan-detector,docpipeline-gpu-watchdog)
     pg_host: "{{ lookup('ansible.builtin.env', 'PGHOST') | default('localhost', true) }}"
     pg_port: "{{ lookup('ansible.builtin.env', 'PGPORT') | default('55432', true) }}"
     pg_database: "{{ lookup('ansible.builtin.env', 'PGDATABASE') | default('docpipeline', true) }}"
@@ -40,7 +40,7 @@
         cmd: docker compose up -d
         chdir: "{{ repo_root }}"
       changed_when: true
-      tags: [up, reset, e2e, e2e-k8s]
+      tags: [up, reset, e2e]
 
     - name: Wait for postgres + redpanda to report healthy
       ansible.builtin.command:
@@ -52,7 +52,7 @@
       delay: 1
       changed_when: false
       loop: [postgres, redpanda]
-      tags: [up, reset, e2e, e2e-k8s]
+      tags: [up, reset, e2e]
 
     - name: Stop docker-compose infra
       ansible.builtin.command:
@@ -70,7 +70,7 @@
           -f {{ item }}
       loop: "{{ query('ansible.builtin.fileglob', repo_root + '/migrations/*.sql') | sort }}"
       changed_when: true
-      tags: [init-db, reset, e2e, e2e-k8s]
+      tags: [init-db, reset, e2e]
 
     # ══════════════════════════════════════════════════ reset ══════════
     # Truncate the ledger, clear GCS, recreate Redpanda, flush Redis. Must
@@ -147,11 +147,11 @@
     # (`--tags reset`), always after any redpanda (re)start.
     - name: Create every Kafka topic
       ansible.builtin.shell:
-        cmd: "{{ dotenv_cmd }} uv run python3 scripts/create_topics.py"
+        cmd: "{{ dotenv_cmd }} uv run python3 local_scripts/create_topics.py"
         chdir: "{{ repo_root }}"
         executable: /bin/bash
       changed_when: true
-      tags: [topics, reset, e2e, e2e-k8s]
+      tags: [topics, reset, e2e]
 
     # ══════════════════════════════════════════════════ fixtures ═══════
     - name: Generate + upload the 14 design-doc fixtures
@@ -162,19 +162,11 @@
       changed_when: true
       tags: [fixtures, e2e]
 
-    # e2e-k8s gets a small subset, not all 14 — the real LLM path funnels
-    # through one Ollama pod regardless of extraction replica count, so
-    # draining 14 real-mode documents would take 10+ minutes on its own.
-    # 3 covers tier-0 (digital_clean), OCR-fallback (digital_garbage_text_
-    # layer), and single-shard OCR (one_page_scan) — the full 14 already
-    # get proven correct, fast and free, by make e2e's mock-mode host loop.
-    - name: Generate + upload a small fixture subset for the real-LLM K8s path
-      ansible.builtin.shell:
-        cmd: "{{ dotenv_cmd }} FIXTURE_LIMIT=3 uv run python3 fixtures/generate_fixtures.py"
-        chdir: "{{ repo_root }}"
-        executable: /bin/bash
-      changed_when: true
-      tags: [e2e-k8s]
+    # e2e-k8s's own fixture upload, topic creation, and migrations run
+    # in-cluster (see the new block after the GPU self-heal section below) —
+    # they need the freshly-rebuilt cluster and its in-cluster infra to exist
+    # first, so they can't live here alongside the host-mode fixtures task
+    # above despite doing the conceptually equivalent thing.
 
     # ══════════════════════════════════════════════════ cluster-rebuild ═
     # DESTRUCTIVE: deletes whatever minikube cluster currently exists,
@@ -229,6 +221,79 @@
       changed_when: true
       tags: [cluster-rebuild, e2e-k8s]
 
+    # ══════════════════════════════════════════════════ GPU self-heal ══
+    # Two problems, both fixed by patching the live Deployment because this repo
+    # deliberately does not edit the sibling's ollama.yaml (AGENT.md bug #2):
+    # OLLAMA_KEEP_ALIVE defaults to 5 minutes, so every idle gap unloads a model
+    # and re-runs ggml_cuda_init -- another chance to land on CPU; and when that
+    # does fail, ollama serves from CPU while staying Ready (0.079s -> 150-450s).
+    #
+    # These steps make the deploy deterministic. The gpu-watchdog Deployment
+    # then enforces the same invariants continuously, which a one-shot
+    # deploy-time check never covered.
+    - name: Wait for ollama to be fully available (models pulled) before touching it
+      ansible.builtin.command:
+        cmd: kubectl wait --for=condition=available deployment/ollama --timeout=300s
+      changed_when: false
+      tags: [cluster-rebuild, e2e-k8s]
+
+    # memory: 4Gi was not enough for both models resident at once — ollama's own
+    # loader logged `disabling mmap for llama-server load due to host memory
+    # pressure` with `system_free="768.2 MiB" system_total="4.0 GiB"`. The
+    # CUDA_Host pinned buffers count against the cgroup even though the tensors
+    # are in VRAM, so this is host RAM, not a VRAM shortage (the 2080 Ti has
+    # 10.6 GiB and the two models need ~2.8 GiB of it).
+    - name: Pin ollama's models in VRAM and give it room for both (patches the live Deployment; mlops-llm-repo's manifest is not edited)
+      ansible.builtin.shell:
+        cmd: |
+          set -euo pipefail
+          kubectl set env deployment/ollama OLLAMA_KEEP_ALIVE=-1 OLLAMA_MAX_LOADED_MODELS=2
+          kubectl set resources deployment/ollama --limits=memory=8Gi --requests=memory=2Gi
+        executable: /bin/bash
+      changed_when: true
+      tags: [cluster-rebuild, e2e-k8s]
+
+    # `kubectl set env`/`set resources` each trigger a rollout. ollama.yaml uses
+    # strategy: Recreate (there is exactly one nvidia.com/gpu on this node, so a
+    # surge-then-kill rollout would deadlock), so there is a window with no
+    # ollama pod at all — wait it out before warming.
+    - name: Wait for the patched ollama rollout to settle
+      ansible.builtin.shell:
+        cmd: |
+          set -euo pipefail
+          kubectl rollout status deployment/ollama --timeout=600s
+          kubectl wait --for=condition=available deployment/ollama --timeout=600s
+        executable: /bin/bash
+      changed_when: false
+      tags: [cluster-rebuild, e2e-k8s]
+
+    # Warm *both* tiers' models, not just the cheap one. The funnel escalates
+    # cheap -> strong, so a strong-tier call that has to cold-load qwen2.5:1.5b
+    # is another ggml_cuda_init — previously that one ran for the first time
+    # mid-pipeline, unwarmed and unverified. With OLLAMA_KEEP_ALIVE=-1 set
+    # above, `ollama run` inherits it and each model stays resident for the
+    # pod's lifetime rather than unloading after the default 5 minutes.
+    #
+    # `ollama run` (the CLI inside the image) rather than an HTTP call: the
+    # ollama image ships no curl or wget, confirmed live —
+    # `exec: "curl": executable file not found in $PATH`.
+    - name: Warm both tiers' models through ollama's real inference path
+      ansible.builtin.shell:
+        cmd: |
+          set -euo pipefail
+          for m in llama3.2:1b qwen2.5:1.5b; do
+            kubectl exec deploy/ollama -- ollama run "$m" hi
+          done
+        executable: /bin/bash
+      changed_when: false
+      tags: [cluster-rebuild, e2e-k8s]
+
+    # The actual GPU verification now lives after the docpipeline deploy, in
+    # the "GPU residency gate" block below — it runs `gpu_watchdog --check-once`
+    # inside the gpu-watchdog pod, which is the same code that then enforces
+    # this continuously. Nothing here parses ollama's logs or CLI output any
+    # more. See that block for why the old check could never have worked.
+
     # ══════════════════════════════════════════════════ image ══════════
     - name: Build the docpipeline image into minikube's docker daemon
       ansible.builtin.shell:
@@ -241,9 +306,13 @@
       tags: [image, e2e-k8s]
 
     # ══════════════════════════════════════════════════ deploy (ArgoCD) ═
-    # GitOps end to end. The two Application applies below are the only raw
-    # kubectl/k8s-API calls in this play — irreducible, since ArgoCD can't
-    # sync the object that tells it what to sync.
+    # Infra (templates/infra.yaml, wave -1) and the migrate/topics/fixtures Jobs
+    # (templates/jobs.yaml, wave 0) are part of this same Application and sync.
+    # ArgoCD's sync-wave health-gating is what orders "infra up -> schema/topics/
+    # fixtures exist -> app tier starts", so there is no ansible orchestration of
+    # it. The two Application applies below are the only raw k8s-API calls left
+    # in this play, and are irreducible: ArgoCD can't sync the object that tells
+    # it what to sync.
     - name: Apply the docpipeline ArgoCD Application
       kubernetes.core.k8s:
         state: present
@@ -282,9 +351,39 @@
       changed_when: false
       tags: [keda-install, e2e-k8s]
 
+    # The operator being Available does not mean its CRDs are usable yet, and
+    # more to the point does not mean *ArgoCD* knows about them: ArgoCD caches
+    # the cluster's API resource list, so a just-installed CRD stays invisible
+    # to a sync until that cache refreshes. Confirmed live 2026-08-31 — the
+    # docpipeline sync failed with `no matches for kind "ScaledObject" ... ensure
+    # CRDs are installed first` 32 seconds *after* the CRDs were created. The
+    # race had silently won on every prior run. Waiting for `established` closes
+    # the CRD half; the sync task below retries for the discovery-cache half.
+    - name: Wait for KEDA's CRDs to be established
+      ansible.builtin.command:
+        cmd: "kubectl wait --for=condition=established crd/scaledobjects.keda.sh crd/scaledjobs.keda.sh --timeout=90s"
+      changed_when: false
+      tags: [keda-install, e2e-k8s]
+
+    # --timeout 480: this now blocks through the full sync-wave sequence
+    # (infra healthy -> setup Jobs succeed -> app tier healthy), not just a
+    # flat apply, so it needs real margin instead of the CLI's default of
+    # waiting indefinitely (a stuck wave would otherwise hang this task, and
+    # the whole play, forever with no failure signal).
+    # Retried because of ArgoCD's stale API-discovery cache (see the CRD wait
+    # above): the first sync after a fresh KEDA install can fail with "no
+    # matches for kind ScaledObject" even though the CRDs exist. That is
+    # transient and clears on its own within seconds, so retry rather than
+    # fail the run. Any *other* sync failure is real and still fails after the
+    # attempts are exhausted -- this widens the window, it does not swallow
+    # errors.
     - name: Sync the docpipeline Application from the local k8s/ tree
       ansible.builtin.command:
-        cmd: "argocd app sync docpipeline --core --local {{ repo_root }}/k8s"
+        cmd: "argocd app sync docpipeline --core --local {{ repo_root }}/k8s --timeout 480"
+      register: docpipeline_sync
+      until: docpipeline_sync.rc == 0
+      retries: 3
+      delay: 20
       changed_when: true
       tags: [deploy, e2e-k8s]
 
@@ -322,6 +421,7 @@
         - docpipeline-outbox-relay
         - docpipeline-sweeper
         - docpipeline-orphan-detector
+        - docpipeline-gpu-watchdog
       changed_when: false
       tags: [deploy, e2e-k8s]
 
@@ -334,6 +434,30 @@
     - name: Let the Kafka consumer group rebalance settle after the restart
       ansible.builtin.pause:
         seconds: 20
+      tags: [deploy, e2e-k8s]
+
+    # ══════════════════════════════════════════════ GPU residency gate ══
+    # Asserts both models are resident in *VRAM*, not merely loaded, failing the
+    # play rather than running the whole pipeline on CPU. Runs the same code the
+    # gpu-watchdog runs continuously, so gate and enforcement cannot disagree
+    # about what "on the GPU" means.
+    #
+    # Two constraints worth keeping: this must assert residency *positively* --
+    # the check it replaced used `grep -qv PAT || exit 1`, which passes whenever
+    # any line fails to match and so never once fired. And it must run from a
+    # docpipeline pod, not ollama's, which ships no curl or wget.
+    - name: Wait for the GPU watchdog to be ready
+      ansible.builtin.command:
+        cmd: kubectl rollout status deployment/docpipeline-gpu-watchdog -n default --timeout=90s
+      changed_when: false
+      tags: [deploy, e2e-k8s]
+
+    - name: Gate on ollama actually being GPU-resident (heals once, then fails the play rather than running the whole pipeline on CPU)
+      ansible.builtin.command:
+        cmd: >-
+          kubectl exec deploy/docpipeline-gpu-watchdog -n default --
+          python -m docpipeline.reconciliation.gpu_watchdog --check-once --timeout 600
+      changed_when: false
       tags: [deploy, e2e-k8s]
 
     # Cascade delete goes through ArgoCD, not raw kubectl — the Application
@@ -352,37 +476,71 @@
       tags: [undeploy, never]
 
     # ══════════════════════════════════════════════════ canary / dlq / deadman ═
-    # 900s SLO, not the CLI's 60s default: EXTRACTION_MODE=real is the
-    # in-cluster default, and a real CPU-only Ollama call's wall-clock time
-    # is genuinely host-load-dependent, not just model-size-dependent —
-    # confirmed live anywhere from ~150s to 7.5 minutes for a *single* call
-    # depending on what else the host was doing. FIXTURE_LIMIT=3 (see "e2e-k8s
-    # gets a small subset" above) is the real fix for *contention* between
-    # documents; this SLO is separate margin for raw inference speed varying
-    # with host load, which no amount of pipeline-side tuning controls.
+    # All three exec into docpipeline-triage (stable, always-1-replica, never
+    # KEDA-scaled) because Postgres/Kafka/GCS aren't host-reachable in-cluster.
+    #
+    # 900s SLO rather than the CLI's 60s default: a CPU-only Ollama call is
+    # host-load-dependent, observed from ~150s to 7.5 minutes for one call.
+    # FIXTURE_LIMIT=4 fixes contention *between* documents; this is separate
+    # margin for raw inference speed, which pipeline-side tuning can't control.
+    # --extraction-mode real is load-bearing, not cosmetic -- canary.py can't
+    # infer real-vs-mock from ambient env, and without it wrongly fails a run
+    # that legitimately landed in `review`.
     - name: Run the synthetic canary
-      ansible.builtin.shell:
-        cmd: "{{ dotenv_cmd }} uv run python3 -m docpipeline.reconciliation.canary --slo-seconds 900"
-        chdir: "{{ repo_root }}"
-        executable: /bin/bash
+      ansible.builtin.command:
+        cmd: "kubectl exec deploy/docpipeline-triage -- python -m docpipeline.reconciliation.canary --slo-seconds 900 --extraction-mode real"
       changed_when: false
       tags: [canary, e2e-k8s]
 
+    # Both echo their output for the same reason the summaries do: ansible's
+    # default callback swallows it, and "ok" alone tells you nothing about what
+    # the reconciliation lane actually found. dlq_replay is a no-op on a healthy
+    # run (nothing in `failed`), which is itself the thing worth seeing.
     - name: Re-drive failed docs whose build_sha/prompt_version changed
-      ansible.builtin.shell:
-        cmd: "{{ dotenv_cmd }} uv run python3 -m docpipeline.reconciliation.dlq_replay"
-        chdir: "{{ repo_root }}"
-        executable: /bin/bash
+      ansible.builtin.command:
+        cmd: "kubectl exec deploy/docpipeline-triage -- python -m docpipeline.reconciliation.dlq_replay"
+      register: dlq_replay_result
       changed_when: false
-      tags: [dlq-replay]
+      tags: [dlq-replay, verify-extras]
 
+    - name: Show the DLQ replay result
+      ansible.builtin.debug:
+        msg: "{{ dlq_replay_result.stdout_lines | default(['(no output)']) }}"
+      tags: [dlq-replay, verify-extras]
+
+    # Exits non-zero if the pipeline has been totally silent for
+    # DEADMANS_SWITCH_WINDOW_SECONDS. Run last in verify-loop, where documents
+    # have just settled, so silence there is a real failure rather than an idle
+    # cluster -- do not move it ahead of the drain.
     - name: Check for total silence (dead man's switch)
-      ansible.builtin.shell:
-        cmd: "{{ dotenv_cmd }} uv run python3 -m docpipeline.reconciliation.deadmans_switch"
-        chdir: "{{ repo_root }}"
-        executable: /bin/bash
+      ansible.builtin.command:
+        cmd: "kubectl exec deploy/docpipeline-triage -- python -m docpipeline.reconciliation.deadmans_switch"
+      register: deadmans_result
+      failed_when: false
       changed_when: false
-      tags: [deadmans-switch]
+      tags: [deadmans-switch, verify-extras]
+
+    - name: Show the dead man's switch result
+      ansible.builtin.debug:
+        msg: "{{ deadmans_result.stdout_lines | default(['(no output)']) }}"
+      tags: [deadmans-switch, verify-extras]
+
+    - name: Fail if the dead man's switch reports the pipeline unhealthy
+      ansible.builtin.fail:
+        msg: "dead man's switch reported unhealthy (rc={{ deadmans_result.rc }}) — see the output above"
+      when: deadmans_result.rc != 0
+      tags: [deadmans-switch, verify-extras]
+
+    # Standalone -- not part of e2e-k8s's own tag list. Assumes the cluster
+    # is already up (no deploy/build steps here); just injects fresh
+    # documents and returns immediately, for repeatedly exercising a live
+    # cluster (KEDA scaling, the extraction liveness probe, sweeper redrive)
+    # without paying for a full teardown/rebuild each time.
+    - name: Replay N fresh synthetic documents into the running cluster
+      ansible.builtin.command:
+        cmd: "kubectl exec deploy/docpipeline-triage -- python local_scripts/replay_docs.py --count {{ replay_count | default(3) }}"
+      changed_when: true
+      tags: [replay]
 
     # ══════════════════════════════════════════════════ e2e (host/mock) ═
     # This section and test/summary after it must stay physically last:
@@ -394,7 +552,7 @@
       # (see AGENT.md's PID-capture gotcha).
       ansible.builtin.shell:
         cmd: >
-          ( {{ dotenv_cmd }} exec {{ repo_root }}/.venv/bin/python3 scripts/run_local.py )
+          ( {{ dotenv_cmd }} exec {{ repo_root }}/.venv/bin/python3 local_scripts/run_local.py )
           > /tmp/docpipeline_e2e.log 2>&1 & echo $! > /tmp/docpipeline_e2e.pid
         chdir: "{{ repo_root }}"
         executable: /bin/bash
@@ -408,7 +566,7 @@
 
     - name: Wait for every document to reach a terminal state
       ansible.builtin.shell:
-        cmd: "{{ dotenv_cmd }} uv run python3 scripts/wait_for_drain.py 180"
+        cmd: "{{ dotenv_cmd }} uv run python3 local_scripts/wait_for_drain.py 180"
         chdir: "{{ repo_root }}"
         executable: /bin/bash
       register: drain_result
@@ -450,18 +608,108 @@
 
     # ══════════════════════════════════════════════════ test / summary ═
     # Physically last on purpose — see the note above the e2e section.
-    - name: Print the final per-document summary
+    # Same split as the in-cluster summary below: `--tags e2e` has already run
+    # wait_for_drain, so in-flight there is a real failure; bare `make summary`
+    # is a progress report against a possibly-live pipeline and must not fail.
+    # Registered + echoed rather than run bare, same reason as the in-cluster
+    # summary below — see the comment there.
+    - name: Print the final per-document summary (host/mock)
       ansible.builtin.shell:
-        cmd: "{{ dotenv_cmd }} uv run python3 scripts/summarize.py"
+        cmd: >-
+          {{ dotenv_cmd }} uv run python3 local_scripts/summarize.py
+          {{ '--require-settled' if 'e2e' in ansible_run_tags else '' }}
         chdir: "{{ repo_root }}"
         executable: /bin/bash
+      register: host_summary_result
+      failed_when: false
       changed_when: false
-      tags: [summary, e2e, e2e-k8s]
+      tags: [summary, e2e]
 
+    - name: Show the host/mock summary
+      ansible.builtin.debug:
+        msg: "{{ host_summary_result.stdout_lines }}"
+      tags: [summary, e2e]
+
+    - name: Fail if the host/mock run did not settle
+      ansible.builtin.fail:
+        msg: "summarize.py reported the run did not settle (rc={{ host_summary_result.rc }}) — see the table above"
+      when: host_summary_result.rc != 0
+      tags: [summary, e2e]
+
+    # The canary above only blocks on its *own* one synthetic document — the
+    # 4 real fixtures (FIXTURE_LIMIT=4) are dispatched earlier and happen to
+    # be racing the canary for the same single Ollama pod, so they *often*
+    # finish by the time the canary does, but that's incidental serialization,
+    # not a guarantee. Without an explicit wait here, summarize.py below can
+    # catch a fixture mid-flight (e.g. still working through a multi-round
+    # schema repair loop) and now fails the whole play loudly for that —
+    # confirmed live: exactly this happened once a document needed 3 repair
+    # rounds. Same wait_for_drain.py the host path already uses, via kubectl
+    # exec; its manifest.json fallback (stability across two consecutive
+    # polls) is what actually applies here, since the Job that generates
+    # fixtures.generated/manifest.json is a different, short-lived pod from
+    # docpipeline-triage. 900s to match the canary's own SLO margin, not a
+    # tighter guess.
+    # Also tagged replay-wait so `make verify-loop` can reuse this exact task
+    # after `make replay-docs` instead of duplicating it — same wait, same
+    # fail-loudly guard, whether what's in-flight came from the initial
+    # deploy's fixtures or from a later replay.
+    - name: Wait for every document to reach a terminal state (in-cluster)
+      ansible.builtin.command:
+        cmd: "kubectl exec deploy/docpipeline-triage -- python local_scripts/wait_for_drain.py 900"
+      register: k8s_drain_result
+      failed_when: false
+      changed_when: false
+      tags: [e2e-k8s, replay-wait]
+
+    - name: Fail loudly if the in-cluster drain timed out
+      ansible.builtin.fail:
+        msg: "e2e-k8s/replay FAILED to drain in time — {{ k8s_drain_result.stdout_lines[-1] | default('see kubectl logs deploy/docpipeline-extraction') }}"
+      when: k8s_drain_result.rc != 0
+      tags: [e2e-k8s, replay-wait]
+
+    # Tagged separately from e2e-k8s so `make summary-k8s` is runnable standalone
+    # at any point -- `make summary` is host-mode only and points at a different
+    # database entirely, which is the confusion this target exists to avoid.
+    #
+    # --require-settled only at the end of an e2e run, where the drain-wait
+    # above guarantees anything in-flight is a genuine failure. A standalone
+    # summary must not fail on documents that are merely still working.
+    #
+    # Registered + echoed via debug because ansible's default callback swallows
+    # command output; `failed_when: false` + the explicit fail below keeps the
+    # table visible on a non-zero rc, which is when you most want it.
+    - name: Print the final per-document summary (in-cluster)
+      ansible.builtin.command:
+        cmd: >-
+          kubectl exec deploy/docpipeline-triage -- python local_scripts/summarize.py
+          {{ '--require-settled' if 'e2e-k8s' in ansible_run_tags else '' }}
+      register: k8s_summary_result
+      failed_when: false
+      changed_when: false
+      tags: [e2e-k8s, summary-k8s]
+
+    - name: Show the in-cluster summary
+      ansible.builtin.debug:
+        msg: "{{ k8s_summary_result.stdout_lines }}"
+      tags: [e2e-k8s, summary-k8s]
+
+    - name: Fail if the in-cluster run did not settle
+      ansible.builtin.fail:
+        msg: "summarize.py reported the run did not settle (rc={{ k8s_summary_result.rc }}) — see the table above"
+      when: k8s_summary_result.rc != 0
+      tags: [e2e-k8s, summary-k8s]
+
+    # Mock-mode pytest correctness is already fully proven by make e2e's host
+    # loop above — e2e-k8s only needs to prove the deployment mechanics and
+    # real-LLM path (the canary), not re-run the whole suite. Running it
+    # in-cluster too would mean bundling pytest + tests/ into the image and
+    # wiring a full test session's worth of DB connections through kubectl
+    # exec, for no additional correctness signal.
     - name: Run the pytest suite (mock mode)
       ansible.builtin.shell:
         cmd: "{{ dotenv_cmd }} uv run pytest tests/ -v --timeout=60 -k 'not real_llm'"
         chdir: "{{ repo_root }}"
         executable: /bin/bash
       changed_when: false
-      tags: [test, e2e, e2e-k8s]
+      tags: [test, e2e]

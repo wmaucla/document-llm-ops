@@ -1,0 +1,85 @@
+# One-off setup Jobs, wave 0 — after infra (wave -1), before the app tier.
+# ArgoCD owns this ordering, not ansible: a Job is Healthy once Succeeded, so
+# sync genuinely waits for these before applying the app tier.
+#
+# ttlSecondsAfterFinished means a re-sync more than 5 minutes later sees them as
+# missing and recreates them. All three are idempotent, so that's wasted work at
+# worst, not a correctness problem.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: docpipeline-migrate
+  annotations: {argocd.argoproj.io/sync-wave: "0"}
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 300
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: migrate
+        image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        envFrom:
+        - configMapRef: {name: {{ .Values.configMapName }}}
+        # Bootstrap admin, not pipeline_rw/pipeline_ro -- migrations CREATE
+        # those roles, so they can't apply themselves. Literal env rather than
+        # in the ConfigMap: app pods shouldn't hold admin credentials.
+        env:
+        - {name: PGUSER, value: postgres}
+        - {name: PGPASSWORD, value: postgres}
+        command:
+          - /bin/sh
+          - -c
+          - >-
+            for f in migrations/*.sql; do
+            psql -v ON_ERROR_STOP=1 -h "$PGHOST" -p "$PGPORT" -U "$PGUSER" -d "$PGDATABASE" -f "$f" || exit 1;
+            done
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: docpipeline-topics
+  annotations: {argocd.argoproj.io/sync-wave: "0"}
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 300
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: topics
+        image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        envFrom:
+        - configMapRef: {name: {{ .Values.configMapName }}}
+        command: ["python", "local_scripts/create_topics.py"]
+---
+# Small subset, not all 14: the real LLM path funnels through one Ollama pod
+# regardless of replica count, so 14 real-mode documents would take 10+ minutes.
+# 4 is the smallest set that covers every distinct path -- tier-0
+# (digital_clean), OCR-fallback (digital_garbage_text_layer), single-shard OCR
+# (one_page_scan), and multi-shard split+join (three_page_scan). The 4th is
+# load-bearing: record_shard_and_maybe_join is the one place where getting the
+# SQL wrong is a real correctness bug, and at FIXTURE_LIMIT=3 it was never
+# exercised in the k8s path at all -- only in make e2e's mock host loop.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: docpipeline-fixtures
+  annotations: {argocd.argoproj.io/sync-wave: "0"}
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 300
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: fixtures
+        image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        envFrom:
+        - configMapRef: {name: {{ .Values.configMapName }}}
+        env:
+        - {name: FIXTURE_LIMIT, value: "4"}
+        command: ["python", "fixtures/generate_fixtures.py"]

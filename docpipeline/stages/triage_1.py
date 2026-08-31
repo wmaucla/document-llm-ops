@@ -11,14 +11,26 @@ from __future__ import annotations
 
 import logging
 
+from prometheus_client import Counter, start_http_server
+
 from docpipeline import config
 from docpipeline.core import gates, ledger
 from docpipeline.infra import gcs, kafka_utils
-from docpipeline.stages import pdf_utils
+from docpipeline.text import pdf_utils
 
 log = logging.getLogger(__name__)
 
 CONSUMER_GROUP = "triage"
+METRICS_PORT = 9100
+
+# One counter, labeled by handle_gcs_path()'s own return value — every
+# classification triage can reach (the happy path and every failure/review
+# reason alike) increments the same metric under a different `result` label,
+# so a Grafana panel can show the full mix (and any error-type spike) with
+# one query, not one metric per failure mode.
+TRIAGE_RESULTS = Counter(
+    "triage_results_total", "Documents triaged, by classification", ["result"]
+)
 
 
 def handle_gcs_path(cur, gcs_path: str) -> str:
@@ -89,9 +101,10 @@ def handle_gcs_path(cur, gcs_path: str) -> str:
 
 
 def run_forever() -> None:
+    start_http_server(METRICS_PORT)
     conn = ledger.connect(role="rw")
     consumer = kafka_utils.make_consumer(CONSUMER_GROUP, ["triage.requests"])
-    log.info("triage consumer started")
+    log.info("triage consumer started, metrics on :%s/metrics", METRICS_PORT)
     while True:
         payload, msg = kafka_utils.poll_json(consumer)
         if payload is None:
@@ -100,6 +113,7 @@ def run_forever() -> None:
             with conn.cursor() as cur:
                 result = handle_gcs_path(cur, payload["gcs_path"])
             conn.commit()
+            TRIAGE_RESULTS.labels(result=result).inc()
             log.info("triage %s -> %s", payload["gcs_path"], result)
             consumer.commit(msg)
         except Exception:

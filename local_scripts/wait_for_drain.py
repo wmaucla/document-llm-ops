@@ -36,26 +36,34 @@ def main(timeout_seconds: int = 120, poll_seconds: float = 2.0) -> int:
     started = time.monotonic()
     target = expected_count()
     last_total = None
+    total = done = 0
+    effective_target: int | None = target
 
-    while time.monotonic() - started < timeout_seconds:
-        with conn.cursor() as cur:
-            cur.execute("SELECT count(*) AS n FROM documents")
-            total = cur.fetchone()["n"]
-            cur.execute("SELECT count(*) AS n FROM documents WHERE state = ANY(%s)", (list(TERMINAL),))
-            done = cur.fetchone()["n"]
+    # See AGENT.md's "Connection-leak discipline". This polls for up to 900s
+    # inside a long-lived pod via `kubectl exec`; an exception partway through
+    # would otherwise strand an open connection for the pod's lifetime.
+    try:
+        while time.monotonic() - started < timeout_seconds:
+            with conn.cursor() as cur:
+                cur.execute("SELECT count(*) AS n FROM documents")
+                total = cur.fetchone()["n"]
+                cur.execute("SELECT count(*) AS n FROM documents WHERE state = ANY(%s)", (list(TERMINAL),))
+                done = cur.fetchone()["n"]
 
-        effective_target = target if target is not None else total
-        stable = target is not None or total == last_total
-        print(f"{done}/{total} terminal (target={effective_target}, stable={stable}) "
-              f"({time.monotonic() - started:.0f}s elapsed)")
+            effective_target = target if target is not None else total
+            stable = target is not None or total == last_total
+            print(f"{done}/{total} terminal (target={effective_target}, stable={stable}) "
+                  f"({time.monotonic() - started:.0f}s elapsed)")
 
-        if total == 0:
-            pass  # orphan detector hasn't discovered anything yet — keep waiting
-        elif total >= effective_target and stable and done == total:
-            return 0
+            if total == 0:
+                pass  # orphan detector hasn't discovered anything yet — keep waiting
+            elif total >= effective_target and stable and done == total:
+                return 0
 
-        last_total = total
-        time.sleep(poll_seconds)
+            last_total = total
+            time.sleep(poll_seconds)
+    finally:
+        conn.close()
 
     print(f"TIMEOUT after {timeout_seconds}s — {done}/{total} terminal (target={effective_target})")
     return 1

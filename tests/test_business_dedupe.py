@@ -8,7 +8,7 @@ import uuid
 from docpipeline import fixture_content
 from docpipeline.core import ledger
 from docpipeline.infra import gcs
-from docpipeline.stages import extraction, pdf_worker, triage
+from docpipeline.stages import extraction_4 as extraction, pdf_worker_2 as pdf_worker, triage_1 as triage
 from fixtures.generate_fixtures import pdf_with_text_pages
 
 
@@ -25,9 +25,9 @@ def _unique_invoice_lines(suffix: str, extra: list[str] | None = None) -> list[s
         "Seller: Acme Industrial Supply",
         "Buyer: Contoso Manufacturing",
         "Currency: USD",
-        "Line Item: Steel Brackets - 2500.00",
-        "Line Item: Shipping - 150.00",
-        "Line Item: Installation - 1647.00",
+        "Line Item: Steel Brackets | 2500.00",
+        "Line Item: Shipping | 150.00",
+        "Line Item: Installation | 1647.00",
         "Subtotal: 4297.00",
         "Tax: 0.00",
         "Total: 4297.00",

@@ -19,6 +19,10 @@ from docpipeline.infra import kafka_utils
 log = logging.getLogger(__name__)
 
 
+class DeliveryFailed(Exception):
+    """Raised instead of marking rows published when delivery isn't confirmed."""
+
+
 def relay_once(conn, producer, batch_cap: int = config.RELAY_BATCH_CAP) -> int:
     with conn.cursor() as cur:
         cur.execute(
@@ -36,9 +40,38 @@ def relay_once(conn, producer, batch_cap: int = config.RELAY_BATCH_CAP) -> int:
             conn.commit()
             return 0
 
+        # The whole point of the outbox is that a row is marked published only
+        # once the broker actually has it. `produce()` is asynchronous and
+        # `flush()` returns how many messages are *still queued* after its
+        # timeout — discarding that return value (as this did) means a slow or
+        # partitioned broker gets the UPDATE anyway and those messages are
+        # gone, silently, from the one component whose entire job is not
+        # losing them.
+        failures: list[str] = []
+
+        def _on_delivery(err, msg) -> None:
+            if err is not None:
+                failures.append(f"{msg.topic()}: {err}")
+
         for row in rows:
-            kafka_utils.publish(producer, row["topic"], row["payload"], row["headers"], key=row["doc_id"])
-        producer.flush(10)
+            kafka_utils.publish(
+                producer, row["topic"], row["payload"], row["headers"],
+                key=row["doc_id"], on_delivery=_on_delivery,
+            )
+
+        remaining = producer.flush(config.RELAY_FLUSH_TIMEOUT_SECONDS)
+        if remaining or failures:
+            # Roll back rather than mark posted: the rows stay unpublished and
+            # the next tick retries them. Messages that *did* land are
+            # redelivered, which is fine — every consumer in this pipeline is
+            # idempotent by construction (ON CONFLICT DO NOTHING on shards,
+            # first-writer-wins on extraction, idempotent transitions), so
+            # at-least-once is the contract. At-most-once is not.
+            conn.rollback()
+            raise DeliveryFailed(
+                f"{remaining} message(s) unflushed after {config.RELAY_FLUSH_TIMEOUT_SECONDS}s, "
+                f"{len(failures)} delivery error(s): {failures[:3]}"
+            )
 
         ids = [r["id"] for r in rows]
         cur.execute(

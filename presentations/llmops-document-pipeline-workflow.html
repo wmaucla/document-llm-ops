@@ -117,8 +117,8 @@ html,body{margin:0;background:var(--bg);color:var(--ink);
 .ask b{color:#fff;}
 
 /* ── architecture scene ── */
-.scene{display:grid;grid-template-columns:minmax(0,0.85fr) minmax(0,1.35fr);
-  max-width:1600px;margin:0 auto;}
+.scene{display:grid;grid-template-columns:minmax(0,0.85fr) minmax(0,1fr);
+  max-width:1500px;margin:0 auto;}
 .prose{padding:0 3vw 0 6vw;}
 .step{min-height:78vh;display:flex;flex-direction:column;justify-content:center;
   padding:6vh 0;opacity:.3;transition:opacity .4s ease;}
@@ -148,6 +148,31 @@ html,body{margin:0;background:var(--bg);color:var(--ink);
 #archSvg [data-key].show{opacity:1;}
 #archSvg .hi rect.box{stroke:var(--amber) !important;
   filter:drop-shadow(0 0 6px rgba(251,191,36,.5));}
+
+/* click-to-expand: by default the icon+title (.head) sit centered in the
+   box (via --dx/--dy, computed at runtime from each node's real rendered
+   size -- see the script at the bottom) and the smaller detail line(s) stay
+   hidden. Clicking snaps .head back to its natural top position (the
+   coordinates it's actually written with) and reveals the detail lines
+   below it -- independent of the scroll-driven show/hide above. */
+#archSvg .head{transition:transform .35s ease;transform:translate(var(--dx,0px),var(--dy,0px));}
+#archSvg .clickable.expanded .head{transform:translate(0,0);}
+#archSvg .subtext{opacity:0;transition:opacity .25s ease;}
+#archSvg .clickable{cursor:pointer;}
+#archSvg .clickable.expanded .subtext{opacity:1;}
+#archSvg .clickable:hover .box{stroke-width:2.2;}
+/* replica-count badges are structural facts, not click-revealed detail --
+   always visible regardless of expand state. */
+#archSvg .replica-badge{pointer-events:none;}
+
+/* click an edge to see how the document actually gets across it (a Kafka
+   topic, a direct DB call, or nothing -- same process) -- edge-hit is a
+   fat invisible stroke since the visible line is too thin to click reliably. */
+#archSvg .edge-hit{stroke:transparent;stroke-width:14;fill:none;cursor:pointer;}
+#archSvg .edge-label{opacity:0;transition:opacity .25s ease;pointer-events:none;}
+#archSvg .clickable.expanded .edge-label{opacity:1;}
+.diagram-hint{flex:none;text-align:center;font-size:10.5px;color:var(--ink-mute);
+  margin-top:8px;}
 
 @media (max-width:900px){
   .scene{grid-template-columns:1fr;}
@@ -217,14 +242,14 @@ footer.close a{color:var(--ink-dim);}
 <section class="intro">
   <div class="eyebrow">Reference architecture</div>
   <h1>document-llm-ops</h1>
-  <p>A production-shaped document pipeline for 100k docs/day -- a real state machine, a scatter-gather join, deterministic quality gates, and a reconciliation tier that recovers lost work -- built and proven on a laptop, not just designed on paper.</p>
+  <p>A production-shaped document pipeline for 20k docs/day -- a real state machine, a scatter-gather join, deterministic quality gates, and a reconciliation tier that recovers lost work -- built and proven on a laptop, not just designed on paper.</p>
   <div class="scroll-cue">Scroll &darr;</div>
 </section>
 
 <!-- ══════════════════════ PROBLEM ══════════════════════ -->
 <section class="section" id="problem">
   <div class="eyebrow">The problem</div>
-  <h2>At 100k docs/day, "mostly works" is a production incident</h2>
+  <h2>At 20k docs/day, "mostly works" is a production incident</h2>
   <p class="lede">A document pipeline isn't a queue of independent jobs -- it's a state machine under concurrency, and most of the hard bugs live exactly at the seams a simple retry loop can't see.</p>
   <div class="rows">
     <div class="row reveal" style="--i:0"><svg class="ic-row c-red" viewBox="0 0 20 20"><use href="#ic-split"/></svg><span class="pill p-red">Scatter-gather is a hazard</span><span class="desc">A sharded document's last shard can commit while another replica is still mid-write -- a naive <span class="mono-inline" style="font-size:.95em">SELECT count(*)</span> join can miss or double-fire.</span></div>
@@ -237,7 +262,7 @@ footer.close a{color:var(--ink-dim);}
 <!-- ══════════════════════ WHAT WE BUILT ══════════════════════ -->
 <section class="section" id="built">
   <div class="eyebrow">What we built</div>
-  <h2>Steps 0-10 of the design doc's own build order</h2>
+  <h2>The full pipeline, correctness core through operations</h2>
   <p class="lede">Every piece below is live-verified against real infra -- not mocked out for the demo.<span class="ref" data-jump="apx-a1">A1</span></p>
   <div class="rows">
     <div class="row reveal" style="--i:0"><svg class="ic-row c-blue" viewBox="0 0 20 20"><use href="#ic-cylinder"/></svg><span class="pill p-blue">Postgres ledger</span><span class="desc">A real state machine with a guarded <span class="mono-inline" style="font-size:.95em">transition()</span> -- illegal moves raise loudly instead of silently corrupting state.</span></div>
@@ -267,12 +292,12 @@ footer.close a{color:var(--ink-dim);}
     <div class="step" data-step="2">
       <div class="step-eyebrow">02 &middot; Ingest</div>
       <h3>The orphan detector *is* the ingest path</h3>
-      <p>Locally, fake-gcs-server has no bucket-notification wiring -- so a 10s polling loop that finds new objects under <span class="mono-inline" style="font-size:.95em">inbox/</span> is the design doc's own recommended fallback, not a shortcut. Triage classifies and creates the one ledger row.</p>
+      <p>Locally, fake-gcs-server has no bucket-notification wiring -- so a 10s polling loop that finds new objects under <span class="mono-inline" style="font-size:.95em">inbox/</span> is the deliberate, correct approach here, not a shortcut. Triage does two passes: reject zero-byte/unsupported/encrypted/corrupt/oversized uploads outright, then classify what's left (doc type, has-a-text-layer) and write the one ledger row -- ledger row and outbox row, same transaction, always.</p>
     </div>
     <div class="step" data-step="3">
       <div class="step-eyebrow">03 &middot; Fan out, then rejoin</div>
       <h3>Scatter-gather, without a lost-join hazard</h3>
-      <p>Large scans split into page-range shards that OCR in parallel. The join that detects "all shards done" is a single guarded <span class="mono-inline" style="font-size:.95em">UPDATE ... RETURNING</span> under the parent row's lock -- the winning shard publishes; it does not reassemble.</p>
+      <p>Two hops, not one: the PDF worker does tier-0 text extraction if there's already a text layer, otherwise it physically splits the scan into page-range shards; the OCR shard workers -- a separate, KEDA-scaled deployment -- actually rasterize and OCR each shard, independently and in parallel. The join that detects "all shards done" is a single guarded <span class="mono-inline" style="font-size:.95em">UPDATE ... RETURNING</span> under the parent row's lock -- the winning shard publishes; it does not reassemble.</p>
     </div>
     <div class="step" data-step="4">
       <div class="step-eyebrow">04 &middot; Extraction funnel</div>
@@ -296,14 +321,18 @@ footer.close a{color:var(--ink-dim);}
         <div class="lg"><span class="sw d-gate"></span>KEDA autoscale &middot; async</div>
         <div class="lg"><span class="sw d-async"></span>reconciliation &middot; async</div>
       </div>
-      <svg id="archSvg" viewBox="0 0 760 460" preserveAspectRatio="xMidYMid meet" role="img"
-           aria-label="Architecture diagram. Two external boxes sit above a large Kubernetes cluster boundary: Ansible plus ArgoCD, which provisions and deploys everything, and 14 fixture PDFs feeding in from outside as the upload source. Inside the cluster, top to bottom: an ingest band with the orphan detector, triage, and the Postgres ledger; a fan-out and join band with the PDF worker, OCR shard workers, and the scatter-gather join, annotated with a KEDA autoscale badge; an extraction band with the extraction funnel, five quality gates, and the outbox feeding a sink; and a dashed reconciliation band underneath with the sweeper, DLQ replay, dead man's switch, and a synthetic canary.">
+      <div class="diagram-hint">Click any box for detail</div>
+      <svg id="archSvg" viewBox="0 0 560 690" preserveAspectRatio="xMidYMid meet" role="img"
+           aria-label="Architecture diagram, vertical layout, four stacked bands inside a Kubernetes cluster boundary, fed from two external boxes above it: Ansible plus ArgoCD, which provisions and deploys everything, and 14 fixture PDFs as the upload source. Band one, ingest and ledger: orphan detector, triage, Postgres ledger, left to right. Band two, fan-out and join: PDF worker, then three separate OCR shard replica boxes drawn stacked, each with its own curved arrow fanning out from PDF worker and its own curved arrow gathering into the scatter-gather join (a KEDA range of 1 to 5 is shown as a small badge below the three boxes, since only three are drawn). The PDF worker is also a fork point: a document with an existing text layer skips straight down to the extraction funnel; a document needing OCR goes right to the OCR shard replicas and the join, which also feeds down into the extraction funnel. Band three, extraction and gates: the extraction funnel (a stack-of-replicas illustration, KEDA-scaled 1 to 3), five quality gates, and the outbox to sink (a fixed stack of 2 replicas). Band four, a dashed reconciliation strip: the sweeper, DLQ replay, dead man's switch, and a synthetic canary. Every node's icon and title sit centered in the box by default; clicking a node moves them to the top and reveals its detail line below. Two alternate paths are drawn alongside the happy path, each ending in a small labeled pill, not a dangling line: triage can route a bad upload straight to a failed or review pill without touching the rest of the pipeline, and the extraction funnel exhausting its gates routes to a review pill the same way. A curved dashed loop shows the reconciliation band redriving review, failed, and stuck documents back into the extraction funnel.">
         <defs>
           <marker id="a-g" markerWidth="8" markerHeight="8" refX="6.2" refY="4" orient="auto">
             <path d="M0.5,1 L6.5,4 L0.5,7" fill="none" stroke="rgba(255,255,255,.55)" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
           </marker>
           <marker id="a-amber" markerWidth="8" markerHeight="8" refX="6.2" refY="4" orient="auto">
             <path d="M0.5,1 L6.5,4 L0.5,7" fill="none" stroke="#FBBF24" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+          </marker>
+          <marker id="a-red" markerWidth="8" markerHeight="8" refX="6.2" refY="4" orient="auto">
+            <path d="M0.5,1 L6.5,4 L0.5,7" fill="none" stroke="#F87171" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
           </marker>
 
           <!-- shared icon sprite, referenced from here and from plain HTML <use> elsewhere on the page -->
@@ -361,125 +390,262 @@ footer.close a{color:var(--ink-dim);}
           <symbol id="ic-split" viewBox="0 0 20 20">
             <path d="M10 2 V8"/><path d="M10 8 L4 18"/><path d="M10 8 L16 18"/><circle class="ic-fill" cx="10" cy="8" r="1"/>
           </symbol>
+          <symbol id="ic-branch" viewBox="0 0 20 20">
+            <circle cx="5" cy="4" r="2"/><circle cx="5" cy="16" r="2"/><circle cx="15" cy="10" r="2"/>
+            <path d="M5 6 V14"/><path d="M5 10 H13"/>
+          </symbol>
         </defs>
 
-        <!-- ── edges (behind nodes) ── -->
-        <line data-key="edgeAnsibleCluster" x1="155" y1="62" x2="155" y2="76" stroke="rgba(148,163,184,.6)" stroke-width="1.6" stroke-dasharray="4 3" stroke-linecap="round" marker-end="url(#a-g)"/>
-        <path data-key="edgeFixturesOrphan" d="M 585 62 L 585 92 L 340 92 L 340 122" fill="none" stroke="rgba(148,163,184,.6)" stroke-width="1.6" stroke-dasharray="4 3" stroke-linecap="round" marker-end="url(#a-g)"/>
-        <line data-key="edgeOrphanTriage" x1="230" y1="156" x2="250" y2="156" stroke="rgba(255,255,255,.4)" stroke-width="1.6" stroke-linecap="round" marker-end="url(#a-g)"/>
-        <line data-key="edgeTriageLedger" x1="430" y1="156" x2="450" y2="156" stroke="rgba(255,255,255,.4)" stroke-width="1.6" stroke-linecap="round" marker-end="url(#a-g)"/>
-        <line data-key="edgeLedgerPdf" x1="565" y1="196" x2="565" y2="212" stroke="rgba(255,255,255,.4)" stroke-width="1.6" stroke-linecap="round" marker-end="url(#a-g)"/>
-        <path data-key="edgeLedgerPdf" d="M 565 212 L 130 212 L 130 224" fill="none" stroke="rgba(255,255,255,.4)" stroke-width="1.6" stroke-linecap="round" marker-end="url(#a-g)"/>
-        <line data-key="edgePdfOcr" x1="220" y1="256" x2="240" y2="256" stroke="rgba(255,255,255,.4)" stroke-width="1.6" stroke-linecap="round" marker-end="url(#a-g)"/>
-        <line data-key="edgeOcrJoin" x1="400" y1="256" x2="420" y2="256" stroke="rgba(255,255,255,.4)" stroke-width="1.6" stroke-linecap="round" marker-end="url(#a-g)"/>
-        <g data-key="edgeKeda">
-          <path d="M 320 224 L 320 200 L 660 200 L 660 224" fill="none" stroke="#FBBF24" stroke-width="1.6" stroke-dasharray="4 3" stroke-linecap="round" marker-end="url(#a-amber)"/>
-          <text x="490" y="196" text-anchor="middle" font-size="9" font-weight="700" fill="#FBBF24">KEDA &middot; scales on Kafka lag</text>
+        <!-- ── edges (behind nodes) ── click any edge for how the document
+             actually gets from one side to the other: a Kafka topic, a
+             direct DB call, or nothing at all (same process). ── -->
+        <path data-key="edgeAnsibleCluster" d="M 142 54 Q 142 60 142 64" fill="none" stroke="rgba(148,163,184,.6)" stroke-width="1.6" stroke-dasharray="4 3" stroke-linecap="round" marker-end="url(#a-g)"/>
+        <path data-key="edgeFixturesOrphan" d="M 417 54 Q 417 94 97 94 Q 97 100 97 110" fill="none" stroke="rgba(148,163,184,.6)" stroke-width="1.6" stroke-dasharray="4 3" stroke-linecap="round" marker-end="url(#a-g)"/>
+
+        <g data-key="edgeOrphanTriage" class="clickable">
+          <path class="edge-hit" d="M 175 144 Q 185 144 195 144"/>
+          <path d="M 175 144 Q 185 144 195 144" fill="none" stroke="rgba(255,255,255,.4)" stroke-width="1.6" stroke-linecap="round" marker-end="url(#a-g)"/>
+          <text class="edge-label" x="185" y="136" font-size="6.5" font-weight="700" fill="#93C5FD" text-anchor="middle">topic: triage.requests</text>
         </g>
-        <line data-key="edgeJoinFunnel" x1="180" y1="328" x2="180" y2="344" stroke="rgba(255,255,255,.4)" stroke-width="1.6" stroke-linecap="round" marker-end="url(#a-g)"/>
-        <path data-key="edgeJoinFunnel" d="M 545 328 L 545 336 L 180 336 L 180 344" fill="none" stroke="rgba(255,255,255,.4)" stroke-width="1.6" stroke-linecap="round" marker-end="url(#a-g)"/>
-        <line data-key="edgeFunnelGates" x1="290" y1="376" x2="310" y2="376" stroke="rgba(255,255,255,.4)" stroke-width="1.6" stroke-linecap="round" marker-end="url(#a-g)"/>
-        <line data-key="edgeGatesSink" x1="520" y1="376" x2="540" y2="376" stroke="rgba(255,255,255,.4)" stroke-width="1.6" stroke-linecap="round" marker-end="url(#a-g)"/>
-        <path data-key="edgeReconcile" d="M 380 408 L 380 420" fill="none" stroke="rgba(148,163,184,.5)" stroke-width="1.6" stroke-dasharray="5 4" stroke-linecap="round" marker-end="url(#a-g)"/>
+        <path data-key="edgeTriageLedger" d="M 350 144 Q 360 144 370 144" fill="none" stroke="rgba(255,255,255,.4)" stroke-width="1.6" stroke-linecap="round" marker-end="url(#a-g)"/>
+        <g data-key="edgeLedgerPdf" class="clickable">
+          <path class="edge-hit" d="M 447 178 Q 447 225 97 225 Q 97 250 97 280"/>
+          <path d="M 447 178 Q 447 225 97 225 Q 97 250 97 280" fill="none" stroke="rgba(255,255,255,.4)" stroke-width="1.6" stroke-linecap="round" marker-end="url(#a-g)"/>
+          <text class="edge-label" x="97" y="217" font-size="6.5" font-weight="700" fill="#93C5FD" text-anchor="middle">topic: text.embedded / ocr.split</text>
+        </g>
+
+        <!-- The actual scatter: PDF worker fans out to each OCR shard replica. -->
+        <g data-key="edgePdfOcr" class="clickable">
+          <path class="edge-hit" d="M 175 314 Q 185 298 195 284"/>
+          <path class="edge-hit" d="M 175 314 L 195 314"/>
+          <path class="edge-hit" d="M 175 314 Q 185 330 195 344"/>
+          <path d="M 175 314 Q 185 298 195 284" fill="none" stroke="rgba(255,255,255,.4)" stroke-width="1.6" stroke-linecap="round" marker-end="url(#a-g)"/>
+          <path d="M 175 314 L 195 314" fill="none" stroke="rgba(255,255,255,.4)" stroke-width="1.6" stroke-linecap="round" marker-end="url(#a-g)"/>
+          <path d="M 175 314 Q 185 330 195 344" fill="none" stroke="rgba(255,255,255,.4)" stroke-width="1.6" stroke-linecap="round" marker-end="url(#a-g)"/>
+          <text class="edge-label" x="185" y="270" font-size="6.5" font-weight="700" fill="#93C5FD" text-anchor="middle">topic: ocr.shard (one message per shard)</text>
+        </g>
+        <!-- The actual gather: each shard's own worker calls the same DB
+             function directly -- this is NOT a Kafka hop, there's no
+             "gather" topic. Only the replica that completes the last shard
+             (shards_done == shards_total) goes on to publish ocr.completed. -->
+        <g data-key="edgeOcrJoin" class="clickable">
+          <path class="edge-hit" d="M 350 284 Q 360 298 370 314"/>
+          <path class="edge-hit" d="M 350 314 L 370 314"/>
+          <path class="edge-hit" d="M 350 344 Q 360 330 370 314"/>
+          <path d="M 350 284 Q 360 298 370 314" fill="none" stroke="rgba(255,255,255,.4)" stroke-width="1.6" stroke-linecap="round" marker-end="url(#a-g)"/>
+          <path d="M 350 314 L 370 314" fill="none" stroke="rgba(255,255,255,.4)" stroke-width="1.6" stroke-linecap="round" marker-end="url(#a-g)"/>
+          <path d="M 350 344 Q 360 330 370 314" fill="none" stroke="rgba(255,255,255,.4)" stroke-width="1.6" stroke-linecap="round" marker-end="url(#a-g)"/>
+          <text class="edge-label" x="360" y="270" font-size="6.5" font-weight="700" fill="#93C5FD" text-anchor="middle">DB call, not Kafka: record_shard_and_maybe_join()</text>
+        </g>
+        <g data-key="edgePdfFunnel" class="clickable">
+          <path class="edge-hit" d="M 50 348 Q 45 410 60 494"/>
+          <path d="M 50 348 Q 45 410 60 494" fill="none" stroke="#FBBF24" stroke-width="1.6" stroke-dasharray="4 3" stroke-linecap="round" marker-end="url(#a-amber)"/>
+          <text x="65" y="405" font-size="7" font-weight="700" fill="#FBBF24">tier-0 has text layer &middot; skips OCR</text>
+          <text class="edge-label" x="65" y="415" font-size="6.5" font-weight="700" fill="#93C5FD">topic: ocr.completed</text>
+        </g>
+        <g data-key="edgeJoinFunnel" class="clickable">
+          <path class="edge-hit" d="M 447 348 Q 293 400 140 494"/>
+          <path d="M 447 348 Q 293 400 140 494" fill="none" stroke="rgba(255,255,255,.4)" stroke-width="1.6" stroke-linecap="round" marker-end="url(#a-g)"/>
+          <text class="edge-label" x="293" y="393" font-size="6.5" font-weight="700" fill="#93C5FD" text-anchor="middle">topic: ocr.completed (same topic as tier-0)</text>
+        </g>
+        <g data-key="edgeFunnelGates" class="clickable">
+          <path class="edge-hit" d="M 185 528 Q 195 528 205 528"/>
+          <path d="M 185 528 Q 195 528 205 528" fill="none" stroke="rgba(255,255,255,.4)" stroke-width="1.6" stroke-linecap="round" marker-end="url(#a-g)"/>
+          <text class="edge-label" x="195" y="520" font-size="6.5" font-weight="700" fill="#93C5FD" text-anchor="middle">in-process, same consumer</text>
+        </g>
+        <g data-key="edgeGatesSink" class="clickable">
+          <path class="edge-hit" d="M 365 528 Q 375 528 385 528"/>
+          <path d="M 365 528 Q 375 528 385 528" fill="none" stroke="rgba(255,255,255,.4)" stroke-width="1.6" stroke-linecap="round" marker-end="url(#a-g)"/>
+          <text class="edge-label" x="375" y="520" font-size="6.5" font-weight="700" fill="#93C5FD" text-anchor="middle">topic: document.extracted</text>
+        </g>
+
+        <!-- Triage can also route straight to a settled outcome without ever
+             reaching the rest of the pipeline: zero-byte/bad-MIME uploads go
+             straight to failed, encrypted/corrupt/oversized ones to review. -->
+        <!-- The little cylinder icon on every outcome pill is the same one
+             ledgerNode uses -- these are all just rows in the one Postgres
+             documents table, distinguished by the state column, not a
+             separate store per outcome. -->
+        <g data-key="edgeTriageOutcome">
+          <path d="M 240 178 Q 220 192 237 200" fill="none" stroke="#F87171" stroke-width="1.6" stroke-dasharray="4 3" stroke-linecap="round" marker-end="url(#a-red)"/>
+          <path d="M 304 178 Q 324 192 311 200" fill="none" stroke="#FBBF24" stroke-width="1.6" stroke-dasharray="4 3" stroke-linecap="round" marker-end="url(#a-amber)"/>
+          <text x="272" y="196" font-size="7" font-weight="700" fill="#94A3B8" text-anchor="middle">bad upload</text>
+          <rect x="205" y="200" width="64" height="16" rx="8" fill="rgba(248,113,113,0.12)" stroke="#F87171" stroke-width="1"/>
+          <use href="#ic-cylinder" x="209" y="204" width="8" height="8" class="ic" color="#F87171" stroke="#F87171"/>
+          <text x="245" y="211" font-size="7.5" font-weight="700" fill="#F87171" text-anchor="middle">failed</text>
+          <rect x="279" y="200" width="64" height="16" rx="8" fill="rgba(251,191,36,0.12)" stroke="#FBBF24" stroke-width="1"/>
+          <use href="#ic-cylinder" x="283" y="204" width="8" height="8" class="ic" color="#FBBF24" stroke="#FBBF24"/>
+          <text x="319" y="211" font-size="7.5" font-weight="700" fill="#FBBF24" text-anchor="middle">review</text>
+        </g>
+
+        <!-- The funnel exhausting all tiers/gates without a clean pass is a
+             settled outcome too, not a dead end -- same review state a
+             triage-time reject can land in. -->
+        <g data-key="edgeGatesReview">
+          <path d="M 340 494 Q 336 484 332 476" fill="none" stroke="#FBBF24" stroke-width="1.6" stroke-dasharray="4 3" stroke-linecap="round" marker-end="url(#a-amber)"/>
+          <text x="332" y="452" font-size="7" font-weight="700" fill="#94A3B8" text-anchor="middle">gates fail</text>
+          <rect x="300" y="460" width="64" height="16" rx="8" fill="rgba(251,191,36,0.12)" stroke="#FBBF24" stroke-width="1"/>
+          <use href="#ic-cylinder" x="304" y="464" width="8" height="8" class="ic" color="#FBBF24" stroke="#FBBF24"/>
+          <text x="340" y="471" font-size="7.5" font-weight="700" fill="#FBBF24" text-anchor="middle">review</text>
+        </g>
+
+        <path data-key="edgeReconcile" d="M 285 562 Q 312 596 285 630" fill="none" stroke="rgba(148,163,184,.5)" stroke-width="1.6" stroke-dasharray="5 4" stroke-linecap="round" marker-end="url(#a-g)"/>
+        <text data-key="edgeReconcile" x="316" y="598" font-size="7" fill="#94A3B8">review / failed</text>
+
+        <!-- The other half of the loop: the sweeper (and operator break-glass)
+             redrive review/failed/stuck documents straight back into the
+             extraction funnel -- reconciliation isn't a one-way drain. -->
+        <g data-key="edgeRedrive">
+          <path d="M 100 630 Q 73 605 100 580" fill="none" stroke="#94A3B8" stroke-width="1.6" stroke-dasharray="5 4" stroke-linecap="round" marker-end="url(#a-g)"/>
+          <text x="15" y="598" font-size="7" fill="#94A3B8">redriven &rarr; extract_pending</text>
+        </g>
 
         <!-- ══ EXTERNAL · OUTSIDE THE CLUSTER ══ -->
-        <g data-key="ansibleNode">
-          <rect class="box" x="40" y="14" width="230" height="48" rx="14" fill="rgba(148,163,184,0.05)" stroke="#94A3B8" stroke-width="1.4" stroke-dasharray="5 4"/>
-          <use href="#ic-layers" x="54" y="28" width="20" height="20" class="ic" color="#CBD5E1" stroke="#CBD5E1"/>
-          <text x="82" y="37" font-size="12" font-weight="700" fill="#F1F5F9">Ansible + ArgoCD</text>
-          <text x="82" y="52" font-size="9" fill="#94A3B8">provisions + deploys &middot; external</text>
+        <g data-key="ansibleNode" class="clickable">
+          <rect class="box" x="15" y="14" width="255" height="40" rx="12" fill="rgba(148,163,184,0.05)" stroke="#94A3B8" stroke-width="1.4" stroke-dasharray="5 4"/>
+          <g class="head">
+            <use href="#ic-layers" x="27" y="24" width="18" height="18" class="ic" color="#CBD5E1" stroke="#CBD5E1"/>
+            <text x="52" y="34" font-size="11" font-weight="700" fill="#F1F5F9">Ansible + ArgoCD</text>
+          </g>
+          <text class="subtext" x="52" y="46" font-size="8" fill="#94A3B8">provisions + deploys &middot; external</text>
         </g>
-        <g data-key="fixturesNode">
-          <rect class="box" x="470" y="14" width="230" height="48" rx="14" fill="rgba(148,163,184,0.05)" stroke="#94A3B8" stroke-width="1.4" stroke-dasharray="5 4"/>
-          <use href="#ic-bucket" x="484" y="28" width="20" height="20" class="ic" color="#CBD5E1" stroke="#CBD5E1"/>
-          <text x="512" y="37" font-size="12" font-weight="700" fill="#F1F5F9">14 fixture PDFs</text>
-          <text x="512" y="52" font-size="9" fill="#94A3B8">uploaded to inbox/ &middot; external</text>
+        <g data-key="fixturesNode" class="clickable">
+          <rect class="box" x="290" y="14" width="255" height="40" rx="12" fill="rgba(148,163,184,0.05)" stroke="#94A3B8" stroke-width="1.4" stroke-dasharray="5 4"/>
+          <g class="head">
+            <use href="#ic-bucket" x="302" y="24" width="18" height="18" class="ic" color="#CBD5E1" stroke="#CBD5E1"/>
+            <text x="327" y="34" font-size="11" font-weight="700" fill="#F1F5F9">14 fixture PDFs</text>
+          </g>
+          <text class="subtext" x="327" y="46" font-size="8" fill="#94A3B8">uploaded to inbox/ &middot; external</text>
         </g>
 
         <!-- ══ KUBERNETES CLUSTER · the background everything else deploys onto ══ -->
-        <rect data-key="clusterBoundary" x="20" y="78" width="720" height="364" rx="26" fill="rgba(96,165,250,0.04)" stroke="#60A5FA" stroke-width="2.4" stroke-dasharray="10 6"/>
-        <rect data-key="clusterBoundary" x="38" y="66" width="280" height="24" rx="8" fill="#0F172A"/>
-        <use data-key="clusterBoundary" href="#ic-cube" x="44" y="70" width="16" height="16" class="ic" color="#60A5FA" stroke="#60A5FA"/>
-        <text data-key="clusterBoundary" x="66" y="82" font-size="11" font-weight="800" letter-spacing="0.08em" fill="#60A5FA">MINIKUBE &middot; ARGOCD-MANAGED</text>
+        <rect data-key="clusterBoundary" x="6" y="76" width="548" height="598" rx="20" fill="rgba(96,165,250,0.04)" stroke="#60A5FA" stroke-width="2.2" stroke-dasharray="10 6"/>
+        <rect data-key="clusterBoundary" x="20" y="64" width="270" height="20" rx="7" fill="#0F172A"/>
+        <use data-key="clusterBoundary" href="#ic-cube" x="26" y="68" width="14" height="14" class="ic" color="#60A5FA" stroke="#60A5FA"/>
+        <text data-key="clusterBoundary" x="46" y="78" font-size="9.5" font-weight="800" letter-spacing="0.07em" fill="#60A5FA">MINIKUBE &middot; ARGOCD-MANAGED</text>
 
-        <!-- ══ BAND 1 (in-cluster) · INGEST & LEDGER ══ -->
-        <rect data-key="bandIngest" x="40" y="104" width="680" height="92" rx="16" fill="rgba(148,163,184,0.045)" stroke="#94A3B8" stroke-width="1.3" opacity="0.85"/>
-        <rect data-key="bandIngest" x="56" y="94" width="180" height="20" rx="6" fill="#0F172A"/>
-        <text data-key="bandIngest" x="64" y="108" font-size="10" font-weight="800" letter-spacing="0.1em" fill="#94A3B8">INGEST &amp; LEDGER</text>
+        <!-- ══ BAND 1 (in-cluster) · INGEST &amp; LEDGER, left to right ══ -->
+        <text data-key="bandIngest" x="20" y="100" font-size="9" font-weight="800" letter-spacing="0.08em" fill="#94A3B8">INGEST &amp; LEDGER</text>
 
-        <g data-key="orphanNode">
-          <rect class="box" x="50" y="124" width="180" height="64" rx="16" fill="rgba(148,163,184,0.08)" stroke="#94A3B8" stroke-width="1.4"/>
-          <use href="#ic-clock" x="64" y="140" width="24" height="24" class="ic" color="#E2E8F0" stroke="#E2E8F0"/>
-          <text x="96" y="150" font-size="13" font-weight="700" fill="#F1F5F9">Orphan detector</text>
-          <text x="96" y="165" font-size="9" fill="#94A3B8">10s poll &middot; *is* the ingest path</text>
+        <g data-key="orphanNode" class="clickable">
+          <rect class="box" x="20" y="110" width="155" height="68" rx="14" fill="rgba(148,163,184,0.08)" stroke="#94A3B8" stroke-width="1.4"/>
+          <g class="head">
+            <use href="#ic-clock" x="30" y="120" width="20" height="20" class="ic" color="#E2E8F0" stroke="#E2E8F0"/>
+            <text x="54" y="130" font-size="11" font-weight="700" fill="#F1F5F9">Orphan detector</text>
+          </g>
+          <text class="subtext" x="30" y="160" font-size="7.5" fill="#94A3B8">10s poll &middot; *is* ingest</text>
         </g>
-        <g data-key="triageNode">
-          <rect class="box" x="250" y="124" width="180" height="64" rx="16" fill="rgba(148,163,184,0.08)" stroke="#94A3B8" stroke-width="1.4"/>
-          <use href="#ic-dag" x="264" y="140" width="24" height="24" class="ic" color="#E2E8F0" stroke="#E2E8F0"/>
-          <text x="296" y="150" font-size="13" font-weight="700" fill="#F1F5F9">Triage</text>
-          <text x="296" y="165" font-size="9" fill="#94A3B8">classify + dispatch</text>
+        <g data-key="triageNode" class="clickable">
+          <rect class="box" x="195" y="110" width="155" height="68" rx="14" fill="rgba(148,163,184,0.08)" stroke="#94A3B8" stroke-width="1.4"/>
+          <g class="head">
+            <use href="#ic-dag" x="205" y="120" width="20" height="20" class="ic" color="#E2E8F0" stroke="#E2E8F0"/>
+            <text x="229" y="130" font-size="11" font-weight="700" fill="#F1F5F9">Triage</text>
+          </g>
+          <text class="subtext" x="205" y="160" font-size="7.5" fill="#94A3B8">validate + classify</text>
         </g>
-        <g data-key="ledgerNode">
-          <rect class="box" x="450" y="124" width="230" height="64" rx="16" fill="rgba(148,163,184,0.08)" stroke="#94A3B8" stroke-width="1.4"/>
-          <use href="#ic-cylinder" x="464" y="140" width="24" height="24" class="ic" color="#E2E8F0" stroke="#E2E8F0"/>
-          <text x="496" y="150" font-size="13" font-weight="700" fill="#F1F5F9">Postgres ledger</text>
-          <text x="496" y="165" font-size="9" fill="#94A3B8">state machine + outbox</text>
-        </g>
-
-        <!-- ══ BAND 2 (in-cluster) · FAN-OUT, JOIN, AUTOSCALE ══ -->
-        <rect data-key="bandJoin" x="40" y="204" width="680" height="92" rx="16" fill="rgba(74,222,128,0.045)" stroke="#4ADE80" stroke-width="1.3" opacity="0.85"/>
-        <rect data-key="bandJoin" x="56" y="194" width="290" height="20" rx="6" fill="#0F172A"/>
-        <text data-key="bandJoin" x="64" y="208" font-size="10" font-weight="800" letter-spacing="0.1em" fill="#4ADE80">FAN-OUT, JOIN &amp; AUTOSCALE</text>
-
-        <g data-key="pdfNode">
-          <rect class="box" x="50" y="224" width="160" height="64" rx="16" fill="rgba(74,222,128,0.08)" stroke="#4ADE80" stroke-width="1.4"/>
-          <use href="#ic-cube" x="64" y="240" width="24" height="24" class="ic" color="#86EFAC" stroke="#86EFAC"/>
-          <text x="96" y="250" font-size="13" font-weight="700" fill="#F1F5F9">PDF worker</text>
-          <text x="96" y="265" font-size="9" fill="#94A3B8">tier-0 pypdf text</text>
-        </g>
-        <g data-key="ocrNode">
-          <rect class="box" x="240" y="224" width="160" height="64" rx="16" fill="rgba(74,222,128,0.08)" stroke="#4ADE80" stroke-width="1.4"/>
-          <use href="#ic-grid" x="254" y="240" width="24" height="24" class="ic" color="#86EFAC" stroke="#86EFAC"/>
-          <text x="286" y="250" font-size="13" font-weight="700" fill="#F1F5F9">OCR shard</text>
-          <rect x="286" y="258" width="9" height="9" rx="2" fill="none" stroke="#4ADE80" stroke-width="1" stroke-dasharray="2 2" opacity="0.75"/>
-          <text x="300" y="266" font-size="8" fill="#94A3B8">1&ndash;5 replicas &middot; KEDA</text>
-        </g>
-        <g data-key="joinNode">
-          <rect class="box" x="420" y="224" width="270" height="64" rx="16" fill="rgba(74,222,128,0.08)" stroke="#4ADE80" stroke-width="1.4"/>
-          <use href="#ic-split" x="434" y="240" width="24" height="24" class="ic" color="#86EFAC" stroke="#86EFAC"/>
-          <text x="466" y="250" font-size="13" font-weight="700" fill="#F1F5F9">Scatter-gather join</text>
-          <text x="466" y="265" font-size="9" fill="#94A3B8">UPDATE...RETURNING &middot; fires once</text>
+        <g data-key="ledgerNode" class="clickable">
+          <rect class="box" x="370" y="110" width="155" height="68" rx="14" fill="rgba(148,163,184,0.08)" stroke="#94A3B8" stroke-width="1.4"/>
+          <g class="head">
+            <use href="#ic-cylinder" x="380" y="120" width="20" height="20" class="ic" color="#E2E8F0" stroke="#E2E8F0"/>
+            <text x="404" y="130" font-size="11" font-weight="700" fill="#F1F5F9">Postgres ledger</text>
+          </g>
+          <text class="subtext" x="380" y="160" font-size="7.5" fill="#94A3B8">state machine + outbox</text>
         </g>
 
-        <!-- ══ BAND 3 (in-cluster) · EXTRACTION & GATES ══ -->
-        <rect data-key="bandExtract" x="40" y="304" width="680" height="92" rx="16" fill="rgba(96,165,250,0.045)" stroke="#60A5FA" stroke-width="1.3" opacity="0.85"/>
-        <rect data-key="bandExtract" x="56" y="294" width="240" height="20" rx="6" fill="#0F172A"/>
-        <text data-key="bandExtract" x="64" y="308" font-size="10" font-weight="800" letter-spacing="0.1em" fill="#60A5FA">EXTRACTION &amp; GATES</text>
+        <!-- ══ BAND 2 (in-cluster) · FAN-OUT &amp; JOIN, left to right ══ -->
+        <text data-key="bandJoin" x="20" y="270" font-size="9" font-weight="800" letter-spacing="0.08em" fill="#4ADE80">TEXT PRODUCTION &middot; FAN-OUT &amp; JOIN</text>
 
-        <g data-key="funnelNode">
-          <rect class="box" x="50" y="324" width="230" height="64" rx="16" fill="rgba(96,165,250,0.08)" stroke="#60A5FA" stroke-width="1.4"/>
-          <use href="#ic-flask" x="64" y="340" width="24" height="24" class="ic" color="#BFDBFE" stroke="#BFDBFE"/>
-          <text x="96" y="350" font-size="13" font-weight="700" fill="#F1F5F9">Extraction funnel</text>
-          <text x="96" y="365" font-size="9" fill="#94A3B8">mock &middot; cheap &middot; strong tiers</text>
+        <g data-key="pdfNode" class="clickable">
+          <rect class="box" x="20" y="280" width="155" height="68" rx="14" fill="rgba(74,222,128,0.08)" stroke="#4ADE80" stroke-width="1.4"/>
+          <g class="head">
+            <use href="#ic-branch" x="30" y="290" width="20" height="20" class="ic" color="#86EFAC" stroke="#86EFAC"/>
+            <text x="54" y="300" font-size="11" font-weight="700" fill="#F1F5F9">PDF worker</text>
+          </g>
+          <text class="subtext" x="30" y="330" font-size="7.5" fill="#94A3B8">tier-0 text, or split</text>
         </g>
-        <g data-key="gatesNode">
-          <rect class="box" x="310" y="324" width="200" height="64" rx="16" fill="rgba(96,165,250,0.08)" stroke="#60A5FA" stroke-width="1.4"/>
-          <use href="#ic-shield-check" x="324" y="340" width="24" height="24" class="ic" color="#BFDBFE" stroke="#BFDBFE"/>
-          <text x="356" y="350" font-size="13" font-weight="700" fill="#F1F5F9">5 quality gates</text>
-          <text x="356" y="365" font-size="9" fill="#94A3B8">arithmetic defeats injection</text>
+        <!-- Three real, separate replica boxes -- not a stacked-card illusion
+             -- since this is the one node where the fan-out/gather itself
+             (not just the replica count) is the thing worth seeing. -->
+        <!-- Three real, separate replica boxes, each fully labeled -- not a
+             stacked-card illusion -- since this is the one node where the
+             fan-out/gather itself (not just the replica count) is worth
+             seeing. -->
+        <g data-key="ocrNode" class="clickable">
+          <rect class="box" x="195" y="271" width="155" height="26" rx="10" fill="rgba(74,222,128,0.1)" stroke="#4ADE80" stroke-width="1.4"/>
+          <use href="#ic-grid" x="205" y="277" width="14" height="14" class="ic" color="#86EFAC" stroke="#86EFAC"/>
+          <text x="225" y="288" font-size="9.5" font-weight="700" fill="#F1F5F9">OCR shard</text>
+          <rect class="box" x="195" y="301" width="155" height="26" rx="10" fill="rgba(74,222,128,0.1)" stroke="#4ADE80" stroke-width="1.4"/>
+          <use href="#ic-grid" x="205" y="307" width="14" height="14" class="ic" color="#86EFAC" stroke="#86EFAC"/>
+          <text x="225" y="318" font-size="9.5" font-weight="700" fill="#F1F5F9">OCR shard</text>
+          <rect class="box" x="195" y="331" width="155" height="26" rx="10" fill="rgba(74,222,128,0.1)" stroke="#4ADE80" stroke-width="1.4"/>
+          <use href="#ic-grid" x="205" y="337" width="14" height="14" class="ic" color="#86EFAC" stroke="#86EFAC"/>
+          <text x="225" y="348" font-size="9.5" font-weight="700" fill="#F1F5F9">OCR shard</text>
+          <text class="subtext" x="205" y="388" font-size="7.5" fill="#94A3B8">rasterize + OCR</text>
+          <g class="replica-badge">
+            <rect x="237" y="365" width="70" height="14" rx="7" fill="rgba(251,191,36,0.14)" stroke="rgba(251,191,36,0.4)" stroke-width="1"/>
+            <text x="272" y="375" font-size="7.5" font-weight="700" fill="#FBBF24" text-anchor="middle">&times;1&ndash;5 &middot; KEDA</text>
+          </g>
         </g>
-        <g data-key="sinkNode">
-          <rect class="box" x="540" y="324" width="150" height="64" rx="16" fill="rgba(96,165,250,0.08)" stroke="#60A5FA" stroke-width="1.4"/>
-          <use href="#ic-server" x="554" y="340" width="24" height="24" class="ic" color="#BFDBFE" stroke="#BFDBFE"/>
-          <text x="586" y="350" font-size="13" font-weight="700" fill="#F1F5F9">Outbox &rarr; sink</text>
-          <text x="586" y="365" font-size="9" fill="#94A3B8">first-writer-wins</text>
+        <g data-key="joinNode" class="clickable">
+          <rect class="box" x="370" y="280" width="155" height="68" rx="14" fill="rgba(74,222,128,0.08)" stroke="#4ADE80" stroke-width="1.4"/>
+          <g class="head">
+            <use href="#ic-split" x="380" y="290" width="20" height="20" class="ic" color="#86EFAC" stroke="#86EFAC"/>
+            <text x="404" y="300" font-size="11" font-weight="700" fill="#F1F5F9">Scatter-gather join</text>
+          </g>
+          <text class="subtext" x="380" y="330" font-size="7.5" fill="#94A3B8">UPDATE...RETURNING</text>
         </g>
 
-        <!-- ══ ASYNC (in-cluster) · RECONCILIATION ══ -->
+        <!-- ══ BAND 3 (in-cluster) · EXTRACTION, GATES, SINK ══ -->
+        <text data-key="bandExtract" x="20" y="484" font-size="9" font-weight="800" letter-spacing="0.08em" fill="#60A5FA">EXTRACTION &amp; GATES</text>
+
+        <!-- Same treatment as OCR shard: 3 real boxes (matching the KEDA max
+             of 3 exactly, so there's no "N shown vs M possible" gap to
+             caveat the way OCR shard's badge has to). -->
+        <g data-key="funnelNode" class="clickable">
+          <rect class="box" x="20" y="494" width="165" height="26" rx="10" fill="rgba(96,165,250,0.1)" stroke="#60A5FA" stroke-width="1.4"/>
+          <use href="#ic-flask" x="30" y="500" width="14" height="14" class="ic" color="#BFDBFE" stroke="#BFDBFE"/>
+          <text x="50" y="511" font-size="9.5" font-weight="700" fill="#F1F5F9">Extraction funnel</text>
+          <rect class="box" x="20" y="524" width="165" height="26" rx="10" fill="rgba(96,165,250,0.1)" stroke="#60A5FA" stroke-width="1.4"/>
+          <use href="#ic-flask" x="30" y="530" width="14" height="14" class="ic" color="#BFDBFE" stroke="#BFDBFE"/>
+          <text x="50" y="541" font-size="9.5" font-weight="700" fill="#F1F5F9">Extraction funnel</text>
+          <rect class="box" x="20" y="554" width="165" height="26" rx="10" fill="rgba(96,165,250,0.1)" stroke="#60A5FA" stroke-width="1.4"/>
+          <use href="#ic-flask" x="30" y="560" width="14" height="14" class="ic" color="#BFDBFE" stroke="#BFDBFE"/>
+          <text x="50" y="571" font-size="9.5" font-weight="700" fill="#F1F5F9">Extraction funnel</text>
+          <text class="subtext" x="30" y="615" font-size="7.5" fill="#94A3B8">mock &middot; cheap &middot; strong</text>
+          <g class="replica-badge">
+            <rect x="47" y="588" width="70" height="14" rx="7" fill="rgba(251,191,36,0.14)" stroke="rgba(251,191,36,0.4)" stroke-width="1"/>
+            <text x="82" y="598" font-size="7.5" font-weight="700" fill="#FBBF24" text-anchor="middle">&times;1&ndash;3 &middot; KEDA</text>
+          </g>
+        </g>
+        <g data-key="gatesNode" class="clickable">
+          <rect class="box" x="205" y="494" width="160" height="68" rx="14" fill="rgba(96,165,250,0.08)" stroke="#60A5FA" stroke-width="1.4"/>
+          <g class="head">
+            <use href="#ic-shield-check" x="215" y="504" width="20" height="20" class="ic" color="#BFDBFE" stroke="#BFDBFE"/>
+            <text x="239" y="514" font-size="11" font-weight="700" fill="#F1F5F9">5 quality gates</text>
+          </g>
+          <text class="subtext" x="215" y="544" font-size="7.5" fill="#94A3B8">arithmetic defeats injection</text>
+        </g>
+        <!-- Fixed exactly 2, so 2 real boxes is the literal truth, not a
+             representative sample the way OCR shard/funnel's 3-of-N are. -->
+        <g data-key="sinkNode" class="clickable">
+          <rect class="box" x="385" y="494" width="145" height="30" rx="10" fill="rgba(96,165,250,0.1)" stroke="#60A5FA" stroke-width="1.4"/>
+          <use href="#ic-server" x="395" y="502" width="14" height="14" class="ic" color="#BFDBFE" stroke="#BFDBFE"/>
+          <text x="415" y="513" font-size="9.5" font-weight="700" fill="#F1F5F9">Outbox &rarr; sink</text>
+          <rect class="box" x="385" y="532" width="145" height="30" rx="10" fill="rgba(96,165,250,0.1)" stroke="#60A5FA" stroke-width="1.4"/>
+          <use href="#ic-server" x="395" y="540" width="14" height="14" class="ic" color="#BFDBFE" stroke="#BFDBFE"/>
+          <text x="415" y="551" font-size="9.5" font-weight="700" fill="#F1F5F9">Outbox &rarr; sink</text>
+          <text class="subtext" x="395" y="595" font-size="7.5" fill="#94A3B8">first-writer-wins</text>
+          <g class="replica-badge">
+            <rect x="422" y="568" width="60" height="14" rx="7" fill="rgba(148,163,184,0.14)" stroke="rgba(148,163,184,0.4)" stroke-width="1"/>
+            <text x="452" y="578" font-size="7.5" font-weight="700" fill="#CBD5E1" text-anchor="middle">&times;2 fixed</text>
+          </g>
+        </g>
+
+        <!-- ══ BAND 4 (in-cluster, async) · RECONCILIATION ══ -->
         <g data-key="reconcileNode">
-          <rect class="box" x="80" y="410" width="600" height="30" rx="14" fill="rgba(100,116,139,0.06)" stroke="#64748B" stroke-width="1.4" stroke-dasharray="5 4"/>
-          <text x="98" y="429" font-size="11" font-weight="700" fill="#F1F5F9">Sweeper &middot; DLQ replay &middot; dead man's switch &middot; canary</text>
-          <text x="600" y="429" font-size="9" fill="#94A3B8" text-anchor="end">async &middot; finds lost work</text>
+          <rect class="box" x="15" y="630" width="530" height="34" rx="12" fill="rgba(100,116,139,0.06)" stroke="#64748B" stroke-width="1.4" stroke-dasharray="5 4"/>
+          <text x="30" y="651" font-size="9.5" font-weight="700" fill="#F1F5F9">Sweeper &middot; DLQ replay &middot; dead man's switch &middot; canary</text>
+          <text x="533" y="651" font-size="8" fill="#94A3B8" text-anchor="end">async</text>
         </g>
       </svg>
     </div>
@@ -494,7 +660,7 @@ footer.close a{color:var(--ink-dim);}
   <div class="cards3">
     <div class="card c-slate reveal" style="--i:0">
       <div class="card-top"><svg class="ic-card" viewBox="0 0 20 20"><use href="#ic-shield-check"/></svg><div class="num">01</div></div>
-      <h3>56 tests, real infra<span class="ref" data-jump="apx-a3">A3</span></h3>
+      <h3>59 tests, real infra<span class="ref" data-jump="apx-a3">A3</span></h3>
       <p>Every fixture lands on its predicted terminal state -- no mocked Postgres, no mocked Kafka. The lock/join semantics under test are exactly what a mock would paper over.</p>
     </div>
     <div class="card c-amber reveal" style="--i:1">
@@ -550,19 +716,20 @@ footer.close a{color:var(--ink-dim);}
     <thead><tr><th>Component</th><th>Role</th><th>Version</th></tr></thead>
     <tbody>
       <tr><td class="mono">Python / uv</td><td>Runtime + dependency management, no manual venv</td><td class="mono">3.13, uv-managed</td></tr>
-      <tr><td class="mono">Postgres</td><td>The ledger &mdash; state machine, outbox, scatter-gather join</td><td class="mono">docker-compose, host-side</td></tr>
-      <tr><td class="mono">Redpanda</td><td>Kafka-API-compatible broker</td><td class="mono">docker-compose, host-side</td></tr>
-      <tr><td class="mono">fake-gcs-server</td><td>GCS-compatible object store (claim-check payloads)</td><td class="mono">docker-compose, host-side</td></tr>
-      <tr><td class="mono">Redis</td><td>Mock-OCR registry, cross-process test state</td><td class="mono">docker-compose, host-side</td></tr>
+      <tr><td class="mono">Postgres</td><td>The ledger &mdash; state machine, outbox, scatter-gather join</td><td class="mono">docker-compose (make e2e) &middot; ArgoCD-managed in-cluster pod (make e2e-k8s)</td></tr>
+      <tr><td class="mono">Redpanda</td><td>Kafka-API-compatible broker</td><td class="mono">docker-compose (make e2e) &middot; ArgoCD-managed in-cluster pod (make e2e-k8s)</td></tr>
+      <tr><td class="mono">fake-gcs-server</td><td>GCS-compatible object store (claim-check payloads)</td><td class="mono">docker-compose (make e2e) &middot; ArgoCD-managed in-cluster pod (make e2e-k8s)</td></tr>
+      <tr><td class="mono">Redis</td><td>Mock-OCR registry, cross-process test state</td><td class="mono">docker-compose (make e2e) &middot; ArgoCD-managed in-cluster pod (make e2e-k8s)</td></tr>
       <tr><td class="mono">Ansible</td><td>Sole orchestration layer &mdash; replaces bash scripts + raw kubectl/helm</td><td class="mono">tagged playbook, ansible/site.yml</td></tr>
       <tr><td class="mono">ArgoCD</td><td>GitOps deploy for every K8s manifest, KEDA included</td><td class="mono">reused from sibling repo's terraform</td></tr>
       <tr><td class="mono">KEDA</td><td>Autoscaling on Kafka consumer lag</td><td class="mono">2.x, ArgoCD-managed Application</td></tr>
       <tr><td class="mono">LiteLLM + Ollama</td><td>Real LLM tier &mdash; llama3.2:1b / qwen2.5:1.5b</td><td class="mono">reused from sibling mlops-llm-repo</td></tr>
-      <tr><td class="mono">Langfuse</td><td>Trace visualization for every real LLM call</td><td class="mono">reused from sibling mlops-llm-repo, zero extra code</td></tr>
+      <tr><td class="mono">Langfuse</td><td>Trace visualization for every real LLM call, plus this repo's own gate-outcome Scores attached to each trace</td><td class="mono">Langfuse stack reused from sibling mlops-llm-repo; tracing is zero extra code, scoring is docpipeline/stages/llm_client.py's push_gate_scores()</td></tr>
+      <tr><td class="mono">Prometheus + Grafana</td><td>Custom pipeline metrics (triage's per-classification counter) and Kafka/Redpanda topic + consumer-group metrics</td><td class="mono">plain Deployments, not the kube-prometheus-stack operator &mdash; k8s/templates/monitoring.yaml</td></tr>
     </tbody>
   </table>
   <div class="callout amber reveal" style="--i:1;margin-top:16px;">Found live, not on paper: <span class="mono-inline" style="font-size:.95em">uv run</span> forks a child rather than exec'ing into it, so backgrounding a long-lived process via <span class="mono-inline" style="font-size:.95em">exec uv run ...</span> captures the wrong PID. Every prior e2e run's host consumers leaked as zombies until this was fixed to exec the venv interpreter directly.</div>
-  <div class="src">Source: README.md &middot; pyproject.toml &middot; ansible/site.yml &middot; k8s/*.yaml &middot; argocd/*.yaml &middot; AGENT.md.</div>
+  <div class="src">Source: README.md &middot; pyproject.toml &middot; ansible/site.yml &middot; k8s/ (Helm chart) &middot; argocd/*.yaml &middot; AGENT.md.</div>
 </section>
 
 <!-- ══════════════════════ A2 · STATE MACHINE & LEDGER ══════════════════════ -->
@@ -635,7 +802,7 @@ keda-hpa-docpipeline-ocr-shard   Deployment/docpipeline-ocr-shard   3/1 (avg)   
       <div class="callout green">Confirmed live via <span class="mono-inline" style="font-size:.9em">kubectl get hpa</span> during the burst, not inferred from the YAML applying cleanly.</div>
     </div>
   </div>
-  <div class="src">Source: k8s/keda.yaml &middot; argocd/keda-application.yaml &middot; README.md "KEDA -- actually observed scaling" section.</div>
+  <div class="src">Source: k8s/templates/keda.yaml &middot; k8s/values.yaml's keda: block &middot; argocd/keda-application.yaml &middot; README.md "KEDA -- actually observed scaling" section.</div>
 </section>
 
 <!-- ══════════════════════ A5 · PRODUCTION READINESS ══════════════════════ -->
@@ -649,16 +816,16 @@ keda-hpa-docpipeline-ocr-shard   Deployment/docpipeline-ocr-shard   3/1 (avg)   
       <tr><td>CI enforcement</td><td>Quality gates and the read-only/break-glass role split are proven by the test suite and by running live &mdash; not gated in CI</td><td>Make both a first-class CI check, independent of which script invokes the pipeline</td></tr>
       <tr><td>Role-assignment gap</td><td><span class="mono-inline" style="font-size:.95em">grounding</span> passes on a swapped seller/buyer (both genuinely appear in the text); this repo proves the gap exists but doesn't implement the ensemble remediation</td><td>A second, independent extraction pass or a role-specific consistency check</td></tr>
       <tr><td>Cluster lifecycle</td><td><span class="mono-inline" style="font-size:.95em">make e2e-k8s</span> deletes and rebuilds the entire minikube cluster every run &mdash; correct for a clean-room demo, far too slow and destructive for a shared environment</td><td>A persistent cluster with proper reconcile-on-drift instead of delete-and-rebuild</td></tr>
-      <tr><td>Real LLM latency</td><td>A CPU-only 1B model takes up to ~200s per call under load &mdash; fine for a canary, not for a production SLO</td><td>A right-sized hosted or GPU-backed model behind the same LiteLLM alias</td></tr>
-      <tr><td>Secrets</td><td>Postgres/LiteLLM credentials are hardcoded demo values in docker-compose.yml / k8s/configmap.yaml</td><td>A real secret manager (Vault, External Secrets), rotated credentials</td></tr>
+      <tr><td>Real LLM latency</td><td>GPU passthrough is real (a warm call completes in &lt;0.1s), but it's one shared Ollama pod &mdash; every extraction replica queues behind it, and the 1B model itself is quality-limited, not representative of production accuracy</td><td>A right-sized hosted or dedicated-GPU model behind the same LiteLLM alias, sized so concurrent replicas aren't serialized behind one pod</td></tr>
+      <tr><td>Secrets</td><td>Postgres/LiteLLM credentials are hardcoded demo values in docker-compose.yml (host mode) and k8s/values.yaml + k8s/templates/{infra,jobs}.yaml (in-cluster mode)</td><td>A real secret manager (Vault, External Secrets), rotated credentials</td></tr>
       <tr><td>Data durability</td><td><span class="mono-inline" style="font-size:.95em">make reset</span> truncates the ledger and recreates Redpanda from scratch by design</td><td>Managed Postgres/Kafka with backups and point-in-time recovery</td></tr>
       <tr><td>Network</td><td>No NetworkPolicies; every pod can reach every pod</td><td>Namespace-scoped NetworkPolicies, least privilege</td></tr>
     </tbody>
   </table>
-  <div class="src">Source: README.md &middot; AGENT.md &middot; ansible/site.yml &middot; k8s/*.yaml &middot; docker-compose.yml.</div>
+  <div class="src">Source: README.md &middot; AGENT.md &middot; ansible/site.yml &middot; k8s/ (Helm chart) &middot; docker-compose.yml.</div>
 </section>
 
-<footer class="close">document-llm-ops &middot; a local replication of <a href="../../mlops-llm-repo">the 100k docs/day design doc</a>, reusing the sibling <a href="../../mlops-llm-repo">mlops-llm-repo</a>'s LiteLLM/Ollama/Langfuse stack</footer>
+<footer class="close">document-llm-ops &middot; a production-shaped document pipeline at 20k docs/day, reusing the sibling <span class="mono-inline">mlops-llm-repo</span>'s LiteLLM/Ollama/Langfuse stack</footer>
 
 <script>
 const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
@@ -692,10 +859,10 @@ document.querySelectorAll('.reveal').forEach(el=>io.observe(el));
 const STEPS=[
   {show:[]},
   {show:['clusterBoundary','ansibleNode','edgeAnsibleCluster'], hi:['clusterBoundary','ansibleNode']},
-  {show:['bandIngest','orphanNode','triageNode','ledgerNode','fixturesNode','edgeFixturesOrphan','edgeOrphanTriage','edgeTriageLedger'], hi:['orphanNode','triageNode','ledgerNode']},
-  {show:['bandJoin','pdfNode','ocrNode','joinNode','edgeLedgerPdf','edgePdfOcr','edgeOcrJoin','edgeKeda'], hi:['joinNode','ocrNode']},
-  {show:['bandExtract','funnelNode','gatesNode','sinkNode','edgeJoinFunnel','edgeFunnelGates','edgeGatesSink'], hi:['funnelNode','gatesNode']},
-  {show:['reconcileNode','edgeReconcile'], hi:['reconcileNode']}
+  {show:['bandIngest','orphanNode','triageNode','ledgerNode','fixturesNode','edgeFixturesOrphan','edgeOrphanTriage','edgeTriageLedger','edgeTriageOutcome'], hi:['orphanNode','triageNode','ledgerNode']},
+  {show:['bandJoin','pdfNode','ocrNode','joinNode','edgeLedgerPdf','edgePdfOcr','edgeOcrJoin','edgePdfFunnel'], hi:['pdfNode','ocrNode']},
+  {show:['bandExtract','funnelNode','gatesNode','sinkNode','edgeJoinFunnel','edgeFunnelGates','edgeGatesSink','edgeGatesReview'], hi:['funnelNode','gatesNode']},
+  {show:['reconcileNode','edgeReconcile','edgeRedrive'], hi:['reconcileNode']}
 ];
 function applyStep(step){
   const shown=new Set();
@@ -718,6 +885,25 @@ const archIo=new IntersectionObserver(entries=>{
 },{ rootMargin:'-45% 0px -45% 0px', threshold:0 });
 archSteps.forEach(s=>archIo.observe(s));
 applyStep(0);
+
+/* ── click any .clickable node to toggle its detail (subtext) or, for
+   edges, its transport-mechanism label. Single-box nodes additionally get
+   their icon+title centered by default via .head -- multi-box replica
+   nodes (OCR shard, extraction funnel, outbox sink) skip that; their
+   title is already static in every box, there's nothing to center. ── */
+document.querySelectorAll('#archSvg .clickable').forEach(el=>{
+  el.addEventListener('click', ()=>el.classList.toggle('expanded'));
+
+  const box=el.querySelector('rect.box'), head=el.querySelector('.head');
+  if(!box || !head) return;
+  const bx=+box.getAttribute('x'), by=+box.getAttribute('y'),
+        bw=+box.getAttribute('width'), bh=+box.getAttribute('height');
+  const hb=head.getBBox();
+  const targetCx = bx + bw/2, targetCy = by + bh/2;
+  const dx = targetCx - (hb.x + hb.width/2), dy = targetCy - (hb.y + hb.height/2);
+  head.style.setProperty('--dx', dx.toFixed(1)+'px');
+  head.style.setProperty('--dy', dy.toFixed(1)+'px');
+});
 
 /* ── clickable A# refs jump to the matching appendix section ── */
 document.querySelectorAll('.ref[data-jump]').forEach(el=>{

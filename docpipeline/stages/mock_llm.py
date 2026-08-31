@@ -55,7 +55,7 @@ def default_extract(source_text: str) -> dict:
 
     line_items = [
         {"description": desc.strip(), "amount_cents": _money_to_cents(amount)}
-        for desc, amount in re.findall(r"Line Item:\s*(.+?)\s*-\s*(\$?-?[\d,]+\.\d{2})", source_text)
+        for desc, amount in re.findall(r"Line Item:\s*(.+?)\s*\|\s*(\$?-?[\d,]+\.\d{2})", source_text)
     ]
     if line_items:
         fields["line_items"] = line_items
@@ -71,7 +71,7 @@ def default_extract(source_text: str) -> dict:
 class MockLLM:
     """Class-level registry: it must be reachable from whichever process
     registers a behaviour (fixtures/tests) and whichever process later
-    consumes it (the extraction consumer) — see docpipeline.ocr_engine for
+    consumes it (the extraction consumer) — see docpipeline.text.ocr_engine for
     the same pattern applied to OCR, file-backed for cross-process use.
     In-process (tests driving the consumer's functions directly) just uses
     the class dict directly, which is enough for v1."""

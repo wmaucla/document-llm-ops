@@ -33,8 +33,8 @@ def client() -> storage.Client:
 def ensure_bucket(name: str = config.GCS_BUCKET) -> storage.Bucket:
     c = client()
     bucket = c.bucket(name)
-    if not bucket.exists():
-        bucket = c.create_bucket(name)
+    if not bucket.exists(timeout=config.GCS_TIMEOUT_SECONDS):
+        bucket = c.create_bucket(name, timeout=config.GCS_TIMEOUT_SECONDS)
     return bucket
 
 
@@ -55,8 +55,8 @@ def upload_bytes(path: str, data: bytes, content_type: str = "application/octet-
     """path is bucket-relative, e.g. 'inbox/foo.pdf'."""
     bucket = ensure_bucket()
     blob = bucket.blob(path)
-    blob.upload_from_string(data, content_type=content_type)
-    blob.reload()  # populate crc32c after upload
+    blob.upload_from_string(data, content_type=content_type, timeout=config.GCS_TIMEOUT_SECONDS)
+    blob.reload(timeout=config.GCS_TIMEOUT_SECONDS)  # populate crc32c after upload
     if not blob.crc32c:
         raise RuntimeError(
             f"fake-gcs-server did not return crc32c for {path} — doc_id derivation "
@@ -74,19 +74,19 @@ def download_bytes(gcs_path: str) -> bytes:
     bucket_name, blob_name = parse_gcs_path(gcs_path)
     bucket = client().bucket(bucket_name)
     blob = bucket.blob(blob_name)
-    return blob.download_as_bytes()
+    return blob.download_as_bytes(timeout=config.GCS_TIMEOUT_SECONDS)
 
 
 def exists(gcs_path: str) -> bool:
     bucket_name, blob_name = parse_gcs_path(gcs_path)
-    return client().bucket(bucket_name).blob(blob_name).exists()
+    return client().bucket(bucket_name).blob(blob_name).exists(timeout=config.GCS_TIMEOUT_SECONDS)
 
 
 def object_info(gcs_path: str) -> ObjectInfo:
     bucket_name, blob_name = parse_gcs_path(gcs_path)
     blob = client().bucket(bucket_name).blob(blob_name)
     try:
-        blob.reload()
+        blob.reload(timeout=config.GCS_TIMEOUT_SECONDS)
     except NotFound as exc:
         raise FileNotFoundError(gcs_path) from exc
     return ObjectInfo(
@@ -99,13 +99,13 @@ def object_info(gcs_path: str) -> ObjectInfo:
 
 def list_paths(prefix: str) -> list[str]:
     bucket = ensure_bucket()
-    return [f"gs://{config.GCS_BUCKET}/{b.name}" for b in bucket.list_blobs(prefix=prefix)]
+    return [f"gs://{config.GCS_BUCKET}/{b.name}" for b in bucket.list_blobs(prefix=prefix, timeout=config.GCS_TIMEOUT_SECONDS)]
 
 
 def delete_prefix(prefix: str) -> None:
     bucket = ensure_bucket()
-    for blob in bucket.list_blobs(prefix=prefix):
-        blob.delete()
+    for blob in bucket.list_blobs(prefix=prefix, timeout=config.GCS_TIMEOUT_SECONDS):
+        blob.delete(timeout=config.GCS_TIMEOUT_SECONDS)
 
 
 def parse_gcs_path(gcs_path: str) -> tuple[str, str]:

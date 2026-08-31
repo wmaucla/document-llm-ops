@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Values.configMapName }}
+  # Wave -1, alongside infra: the migrate/topics/fixtures Jobs (wave 0) and
+  # the app tier (wave 1) both read PGHOST/etc. from this via envFrom.
+  annotations: {argocd.argoproj.io/sync-wave: "-1"}
+data:
+{{- range $key, $value := .Values.config }}
+  {{ $key }}: {{ $value | quote }}
+{{- end }}
