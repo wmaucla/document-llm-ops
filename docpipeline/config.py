@@ -116,12 +116,14 @@ MAX_REPAIR_ATTEMPTS = _int("MAX_REPAIR_ATTEMPTS", 2)
 FUNNEL_VERSION = _int("FUNNEL_VERSION", 1)
 GATE_SET_VERSION = _int("GATE_SET_VERSION", 1)
 BUILD_SHA = os.environ.get("BUILD_SHA", "local-dev")
-# v2 (2026-08-31): total_cents states the default sign. v1 said only "negative
-# for credit memos", which the 1B model applied universally -- 12/12 extractions
-# came back sign-flipped, tripping the arithmetic gate. Bump this on every
-# prompt change: dlq_replay re-drives documents whose prompt_version moved, so a
-# silent edit makes old and new extractions indistinguishable.
-PROMPT_VERSION = os.environ.get("PROMPT_VERSION", "invoice-extract@v2")
+# v3 (2026-08-31): total_cents is marked required, with the credit-memo rule
+# kept short. v1 said only "negative for credit memos" and the 1B model applied
+# it universally (sign-flipped totals); v2 stated the default sign but was long
+# and conditional, and the model responded by omitting the field entirely.
+# Measured on the cheap tier, 16 extractions each: v1 0 usable, v2 0, v3 8.
+# Bump this on every prompt change -- dlq_replay re-drives documents whose
+# prompt_version moved, so a silent edit makes old and new indistinguishable.
+PROMPT_VERSION = os.environ.get("PROMPT_VERSION", "invoice-extract@v3")
 
 PLAUSIBLE_TOTAL_CEILING_CENTS = _int("PLAUSIBLE_TOTAL_CEILING_CENTS", 10_000_000_00)
 

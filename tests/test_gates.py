@@ -31,6 +31,21 @@ def test_arithmetic_catches_wrong_total():
     assert gates.arithmetic(doc, fields).outcome == "fail"
 
 
+def test_arithmetic_is_not_evadable_by_omitting_the_total():
+    """A missing total must never pass. This gate is what defeats prompt
+    injection, so anything the model leaves out has to mean "not verified" --
+    it used to short-circuit to pass, and documents with no total at all
+    reached `complete` and were posted (confirmed live 2026-08-31)."""
+    doc = {"doc_type": "invoice"}
+    fields = {"line_items": [{"amount_cents": 100}], "subtotal_cents": 100, "tax_cents": 0}
+    result = gates.arithmetic(doc, fields)
+    assert result.outcome == "inconclusive"
+    assert result.detail["reason"] == "total_missing"
+    # blocking + block-on-inconclusive is what actually routes it to review
+    assert "arithmetic" in gates.BLOCKING_GATES
+    assert gates.ON_INCONCLUSIVE["arithmetic"] == "block"
+
+
 def test_grounding_catches_hallucinated_value():
     fields = {"invoice_no": "INV-1", "seller": "Acme", "total_cents": 100_000}
     text = "Invoice INV-1 from Acme. Total: 50.00"

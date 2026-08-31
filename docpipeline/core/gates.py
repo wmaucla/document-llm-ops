@@ -63,7 +63,17 @@ def grounding(fields: dict, source_text: str) -> GateResult:
 def arithmetic(doc: dict, fields: dict) -> GateResult:
     """applies_to doc_type == invoice — known before extraction, so a model
     cannot switch this off by omitting line_items (see 'applies_to must not
-    be evadable')."""
+    be evadable').
+
+    Nothing the model omits may produce a `pass`. This gate exists to check a
+    declared total against independently computed line items, so any missing
+    input means "not verified", never "verified fine" -- and since arithmetic
+    is blocking with ON_INCONCLUSIVE=block, inconclusive routes to review.
+    Confirmed live 2026-08-31: `total is not None` used to short-circuit to
+    pass, so a model that simply omitted total_cents walked through the one
+    gate this repo relies on to defeat prompt injection, and three documents
+    reached `complete` -- and were posted -- carrying no total at all.
+    """
     if doc.get("doc_type") != "invoice":
         return GateResult("not_applicable")
     line_items = fields.get("line_items")
@@ -75,7 +85,9 @@ def arithmetic(doc: dict, fields: dict) -> GateResult:
     total = fields.get("total_cents")
     if declared_subtotal is not None and declared_subtotal != computed_subtotal:
         return GateResult("fail", {"reason": "subtotal_mismatch", "computed": computed_subtotal, "declared": declared_subtotal})
-    if total is not None and total != computed_subtotal + tax:
+    if total is None:
+        return GateResult("inconclusive", {"reason": "total_missing", "computed": computed_subtotal + tax})
+    if total != computed_subtotal + tax:
         return GateResult("fail", {"reason": "total_mismatch", "computed": computed_subtotal + tax, "declared": total})
     return GateResult("pass")
 
