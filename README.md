@@ -12,10 +12,14 @@ operator/break-glass lanes whose guardrails are structural rather than policy �
 against real Postgres, real Kafka (Redpanda), a real GCS-compatible object store, and a real small
 model, not mocks.
 
+![Architecture: Ansible/ArgoCD provisioning a minikube cluster containing four bands — ingest and
+ledger, text production with OCR fan-out and scatter-gather join, extraction with five quality
+gates and the outbox, and an async reconciliation strip](docs/architecture.png)
+
 **Status: live-verified end to end**, twice over via two genuinely separate paths that share no
 infrastructure — `make e2e` (host processes, mock LLM, ~15s) and `make e2e-k8s` (Kubernetes
 Deployments, real LLM, entirely ArgoCD-driven, KEDA actually observed scaling a Deployment from 1
-to 3 replicas under a real backlog). 59 tests pass against real infra, not mocked. See
+to 3 replicas under a real backlog). 77 tests pass against real infra, not mocked. See
 [tests/README.md](tests/README.md) and the walkthrough in
 [`presentations/`](presentations/llmops-document-pipeline-workflow.html).
 
