@@ -88,8 +88,8 @@ config:
   GPU_WATCHDOG_INTERVAL_SECONDS: "30"
   GPU_WATCHDOG_RESTART_COOLDOWN_SECONDS: "300"
 
-# One Deployment per consumer group — see the design doc's "Complete topic
-# list" and "Topics vs deployments". `name` becomes the Deployment/container
+# One Deployment per consumer group: topics are cheap, deployments cost ops.
+# `name` becomes the Deployment/container
 # name as docpipeline-<name>, so it must match the label selectors ansible's
 # docpipeline_apps var and keda.yaml's scaleTargetRefs already expect.
 services:
@@ -113,7 +113,7 @@ services:
       limits: {cpu: 500m, memory: 512Mi}
 
   # The ~900 CPU fleet in production, sized separately from pdf-worker for
-  # exactly the reason the design doc gives — see "Why not collapse further".
+  # kept separate deliberately -- see "Why not collapse further" in README.md.
   # KEDA scales this one on ocr.shard consumer lag (see keda section below).
   - name: ocr-shard
     command: ["python", "-m", "docpipeline.stages.ocr_shard_3"]
@@ -185,7 +185,7 @@ services:
       requests: {cpu: 25m, memory: 64Mi}
       limits: {cpu: 100m, memory: 128Mi}
 
-# Scales the two deployments the design doc calls out: ocr-shard (~900 CPU
+# Scales the two lag-bound deployments: ocr-shard (~900 CPU
 # fleet in prod) and extraction (token-quota bound in prod). lagThreshold: "1"
 # is artificially low so a local burst actually demonstrates scale-up.
 keda:

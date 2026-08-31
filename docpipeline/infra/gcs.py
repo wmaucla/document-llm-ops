@@ -2,7 +2,7 @@
 
 Locally this points at fake-gcs-server via STORAGE_EMULATOR_HOST — the
 google-cloud-storage client picks that env var up itself, so there is no
-application-code branch for "local vs prod" here, matching the design doc's
+application-code branch for "local vs prod" here, matching the
 "Tool substitutions" table.
 
 doc_id is derived from the GCS-provided crc32c checksum, never a SHA-256 of
@@ -60,7 +60,7 @@ def upload_bytes(path: str, data: bytes, content_type: str = "application/octet-
     if not blob.crc32c:
         raise RuntimeError(
             f"fake-gcs-server did not return crc32c for {path} — doc_id derivation "
-            "depends on this; see the design doc's day-1 verification note."
+            "depends on this -- verify it on day 1."
         )
     return ObjectInfo(
         doc_id=crc32c_to_doc_id(blob.crc32c),

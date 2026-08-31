@@ -1,6 +1,6 @@
 """Fixture generator — 'Fixture set — generate them, don't hunt for them'.
 
-Builds every fixture from the design doc's fixture table programmatically,
+Builds every fixture programmatically,
 uploads it to inbox/ in fake-gcs-server, and — for documents with no real
 text layer — registers ground-truth OCR text keyed by (doc_id, page_no) so
 the mock OCR engine can answer deterministically once triage/pdf-worker/
@@ -32,11 +32,11 @@ from docpipeline.text import ocr_engine  # noqa: E402
 
 MANIFEST_PATH = Path(__file__).resolve().parent / "generated" / "manifest.json"
 
-# Caps how many of the 14 design-doc fixtures actually get uploaded — set by
+# Caps how many of the 14 fixtures actually get uploaded — set by
 # make e2e-k8s specifically, so the real-LLM path (one Ollama pod, effectively
 # serial inference regardless of extraction replica count) doesn't have to
 # drain all 14 real-mode-bound documents to prove itself. make e2e (host,
-# mock) always uses the full 14 for the actual design-doc correctness proof.
+# mock) always uses the full 14 as the actual correctness proof.
 FIXTURE_LIMIT = int(os.environ.get("FIXTURE_LIMIT", "0")) or None
 
 

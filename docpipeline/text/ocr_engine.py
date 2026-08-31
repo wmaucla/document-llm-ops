@@ -75,7 +75,7 @@ class OcrEngine:
 
 class MockOcrEngine(OcrEngine):
     """Keyed primarily by (doc_id, page_no) rather than the rendered image's
-    checksum — the design doc's `otiai10/ocrserver`-fronting stub keys on the
+    checksum — an image-checksum-keyed stub would key on the
     input object's checksum, but a PDF-embedded placeholder page re-rasterises
     to different bytes than whatever the fixture generator rendered at
     generation time (recompression, DPI, colour space), so doc_id/page_no is

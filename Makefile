@@ -9,7 +9,7 @@ ANSIBLE := ansible-playbook -i ansible/inventory.ini ansible/site.yml
 COUNT ?= 3
 
 .PHONY: help install up down init-db topics fixtures reset run-local test test-real-llm \
-        cluster-rebuild image keda-install deploy redeploy undeploy k8s-status canary dlq-replay \
+        cluster-rebuild image keda-install deploy undeploy k8s-status canary dlq-replay \
         deadmans-switch summary summary-k8s replay-docs e2e e2e-k8s verify-loop
 
 help:
@@ -19,7 +19,7 @@ help:
 	@echo "make init-db       apply migrations/*.sql"
 	@echo "make reset         truncate ledger, clear GCS, wipe Redpanda, flush Redis"
 	@echo "make topics        create every Kafka topic"
-	@echo "make fixtures      generate + upload the 14 design-doc fixtures"
+	@echo "make fixtures      generate + upload the 14 fixtures"
 	@echo "make run-local     run all consumers as host processes (mock LLM, fast)"
 	@echo "make test          run the pytest suite (mock mode, ~3s)"
 	@echo "make test-real-llm run the opt-in real-LLM integration test (needs port-forward, slow)"
@@ -34,8 +34,9 @@ help:
 	@echo "make canary        inject + track one synthetic document end to end"
 	@echo "make dlq-replay    re-drive failed docs whose build_sha/prompt_version changed"
 	@echo "make deadmans-switch  check for total silence (exits 1 if unhealthy)"
-	@echo "make summary-k8s   the in-cluster equivalent of 'make summary' -- checks the k8s cluster's"
-	@echo "                   own Postgres, not the host one. Standalone, safe to run any time."
+	@echo "make summary       per-document state report against the HOST (docker-compose) Postgres"
+	@echo "make summary-k8s   the in-cluster equivalent -- checks the k8s cluster's own Postgres,"
+	@echo "                   not the host one. Standalone, safe to run any time."
 	@echo "make replay-docs   inject COUNT (default 3) fresh docs into an already-running cluster,"
 	@echo "                   no redeploy -- make replay-docs COUNT=10 to override"
 	@echo "make e2e           fast end-to-end run: reset -> fixtures -> host consumers -> test"

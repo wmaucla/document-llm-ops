@@ -1,6 +1,6 @@
 # docpipeline/
 
-The pipeline itself, mapped directly onto [the design doc](../../mlops-llm-repo)'s sections.
+The pipeline itself, one package per concern.
 
 | Subpackage | What it is |
 |---|---|

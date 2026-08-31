@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Runs every pipeline service as a subprocess — the local stand-in for the
-'same topology' Tilt setup the design doc describes, without needing
+'same topology' local dev loop, without needing
 minikube/Tilt/KEDA (see this repo's README for that deviation).
 
 Ctrl-C stops everything cleanly.

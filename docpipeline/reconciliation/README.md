@@ -1,11 +1,11 @@
 # docpipeline/reconciliation/
 
-Everything that keeps the system healthy, or fixes it by hand — the design doc's "Reconciliation
+Everything that keeps the system healthy, or fixes it by hand — the "Reconciliation
 and operations" section plus the break-glass lane it depends on.
 
 | File | What it does |
 |---|---|
-| `orphan_detector_0.py` | Numbered as the true step 0 — the actual local ingest loop. Polls `inbox/` every 10s and looks for objects the ledger doesn't know about yet; this *is* the design doc's own recommended fallback for a GCS emulator with no bucket-notification wiring, not a deviation. |
+| `orphan_detector_0.py` | Numbered as the true step 0 — the actual local ingest loop. Polls `inbox/` every 10s and looks for objects the ledger doesn't know about yet; this is the standard fallback for a GCS emulator with no bucket-notification wiring, not a deviation. |
 | `sweeper.py` | Stuck-state recovery — batch-capped, `SKIP LOCKED`, re-drives documents stuck past `STUCK_THRESHOLD_SECONDS`. `redrive_document` is shared with `operator.py`'s break-glass lane, not a second write path. |
 | `dlq_replay.py` | Re-drives a `failed` document only when `build_sha`/`prompt_version` changed since the failing attempt — a no-op on a second failure at the same version. |
 | `deadmans_switch.py` | Reports unhealthy the moment something is ingested or in-flight with zero completions; healthy when either nothing is happening or things are completing. |

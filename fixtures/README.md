@@ -1,6 +1,6 @@
 # fixtures/
 
-`generate_fixtures.py` builds and uploads every fixture in the design doc's fixture table
+`generate_fixtures.py` builds and uploads every fixture in the table below
 programmatically (never hand-authored PDFs) — `FIXTURE_LIMIT` env var caps how many upload (the
 full 14 for `make e2e`'s host loop, 3 for `make e2e-k8s`'s real-LLM path, since all inference
 serializes on one Ollama pod regardless of extraction replica count).

@@ -53,7 +53,7 @@ def test_duplicate_shard_delivery_does_not_double_increment(conn, doc_id):
 
 
 def test_join_survives_concurrent_final_shards(doc_id):
-    """The exact hazard the design doc calls out: under READ COMMITTED, a
+    """The exact hazard this join exists for: under READ COMMITTED, a
     bare SELECT count(*) would let two concurrently-finishing shards each see
     'one short' and neither fire — a lost join, worse than a duplicate. The
     UPDATE ... RETURNING row lock is what prevents that."""

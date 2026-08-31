@@ -154,7 +154,7 @@
       tags: [topics, reset, e2e]
 
     # ══════════════════════════════════════════════════ fixtures ═══════
-    - name: Generate + upload the 14 design-doc fixtures
+    - name: Generate + upload the 14 fixtures
       ansible.builtin.shell:
         cmd: "{{ dotenv_cmd }} uv run python3 fixtures/generate_fixtures.py"
         chdir: "{{ repo_root }}"
