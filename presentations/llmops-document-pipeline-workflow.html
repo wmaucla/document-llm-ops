@@ -158,6 +158,12 @@ html,body{margin:0;background:var(--bg);color:var(--ink);
 #archSvg .head{transition:transform .35s ease;transform:translate(var(--dx,0px),var(--dy,0px));}
 #archSvg .clickable.expanded .head{transform:translate(0,0);}
 #archSvg .subtext{opacity:0;transition:opacity .25s ease;}
+/* stateSvg reuses the same click-to-reveal: the detail for each state is
+   hidden until you ask for it, so the diagram reads as a machine first. */
+#stateSvg .subtext{opacity:0;transition:opacity .25s ease;}
+#stateSvg .clickable{cursor:pointer;}
+#stateSvg .clickable.expanded .subtext{opacity:1;}
+#stateSvg .clickable:hover .box{stroke-width:2.4;}
 #archSvg .clickable{cursor:pointer;}
 #archSvg .clickable.expanded .subtext{opacity:1;}
 #archSvg .clickable:hover .box{stroke-width:2.2;}
@@ -721,115 +727,107 @@ footer.close a{color:var(--ink-dim);}
 <!-- ══════════════════════ PROOF ══════════════════════ -->
 <section class="section" id="endstates">
   <h2>Where documents end up</h2>
-  <p class="lede">Three terminal states, but only one of them is truly final. <span class="mono-inline">complete</span> has no outgoing transition at all; <span class="mono-inline">review</span> and <span class="mono-inline">failed</span> are parking states that are legal to leave &mdash; the question is whether anything ever does.</p>
+  <p class="lede">Every box below is a value of one column — <span class="mono-inline">documents.state</span>.
+  Click any state to see how documents get in and out of it.</p>
 
-  <svg id="stateSvg" viewBox="0 0 560 560" preserveAspectRatio="xMidYMid meet" role="img"
-       aria-label="Document state diagram, drawn as a state machine. Documents enter at text_pending and move through text_running, extract_pending and extract_running, each running state being enterable only from its own pending state. Extraction reaching a clean gate result goes to complete, which is absorbing. Gates rejecting it, a triage reject, a duplicate or the auto-post kill switch send it to review; exhausting five attempts sends it to failed. Review and failed are parked rather than final: force_redrive returns either to a pending state, accept_review promotes review straight to complete, and DLQ replay returns failed to a pending state but only when the build or prompt version has changed. Nothing automatic ever leaves review.">
+  <svg id="stateSvg" viewBox="0 0 560 418" preserveAspectRatio="xMidYMid meet" role="img"
+       aria-label="Document state machine. All states are values of the documents.state column in Postgres, drawn inside a labelled boundary. Documents move left to right through text_pending, text_running, extract_pending and extract_running, each running state enterable only from its own pending state. From extract_running they settle into complete when every blocking gate passes, review when a gate fails, or failed when the sweeper caps attempts at five. Curved return arrows show the three ways back: force_redrive from review to extract_pending, accept_review from review straight to complete, and dlq_replay from failed to a pending state. Clicking any state reveals how it is entered and what can leave it.">
 
     <defs>
-      <marker id="sArrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#94A3B8"/></marker>
-      <marker id="sArrowG" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#4ADE80"/></marker>
-      <marker id="sArrowA" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#FBBF24"/></marker>
-      <marker id="sArrowR" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#F87171"/></marker>
+      <marker id="sA" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#94A3B8"/></marker>
+      <marker id="sG" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#4ADE80"/></marker>
+      <marker id="sY" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#FBBF24"/></marker>
+      <marker id="sR" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#F87171"/></marker>
     </defs>
 
-    <text x="14" y="18" font-size="8" font-weight="800" letter-spacing="0.07em" fill="#64748B">IN FLIGHT &mdash; a _running state is only enterable from its own _pending</text>
+    <!-- ══ every state is a row in one Postgres column ══ -->
+    <rect x="8" y="26" width="544" height="276" rx="16" fill="rgba(96,165,250,0.04)" stroke="#60A5FA" stroke-width="2" stroke-dasharray="10 6"/>
+    <rect x="22" y="16" width="196" height="20" rx="7" fill="#0F172A"/>
+    <use href="#ic-cylinder" x="28" y="20" width="13" height="13" class="ic" color="#60A5FA" stroke="#60A5FA"/>
+    <text x="46" y="30" font-size="9" font-weight="800" letter-spacing="0.06em" fill="#60A5FA">POSTGRES &middot; documents.state</text>
 
-    <!-- ══ the in-flight chain, left to right ══ -->
-    <g data-key="chain">
-      <rect x="14" y="30" width="104" height="34" rx="9" fill="rgba(148,163,184,0.08)" stroke="#94A3B8" stroke-width="1.3"/>
-      <text x="66" y="46" font-size="8" font-weight="700" fill="#E2E8F0" text-anchor="middle">text_pending</text>
-      <text x="66" y="57" font-size="6" fill="#64748B" text-anchor="middle">queued for OCR / pypdf</text>
-
-      <path d="M 120 47 L 142 47" stroke="#94A3B8" stroke-width="1.4" marker-end="url(#sArrow)"/>
-      <rect x="144" y="30" width="104" height="34" rx="9" fill="rgba(148,163,184,0.08)" stroke="#94A3B8" stroke-width="1.3"/>
-      <text x="196" y="46" font-size="8" font-weight="700" fill="#E2E8F0" text-anchor="middle">text_running</text>
-      <text x="196" y="57" font-size="6" fill="#64748B" text-anchor="middle">a worker holds it</text>
-
-      <path d="M 250 47 L 272 47" stroke="#94A3B8" stroke-width="1.4" marker-end="url(#sArrow)"/>
-      <text x="261" y="26" font-size="5.5" fill="#64748B" text-anchor="middle">text ready</text>
-      <rect x="274" y="30" width="112" height="34" rx="9" fill="rgba(148,163,184,0.08)" stroke="#94A3B8" stroke-width="1.3"/>
-      <text x="330" y="46" font-size="8" font-weight="700" fill="#E2E8F0" text-anchor="middle">extract_pending</text>
-      <text x="330" y="57" font-size="6" fill="#64748B" text-anchor="middle">queued for the funnel</text>
-
-      <path d="M 388 47 L 410 47" stroke="#94A3B8" stroke-width="1.4" marker-end="url(#sArrow)"/>
-      <rect x="412" y="30" width="112" height="34" rx="9" fill="rgba(148,163,184,0.08)" stroke="#94A3B8" stroke-width="1.3"/>
-      <text x="468" y="46" font-size="8" font-weight="700" fill="#E2E8F0" text-anchor="middle">extract_running</text>
-      <text x="468" y="57" font-size="6" fill="#64748B" text-anchor="middle">an LLM call is in flight</text>
+    <!-- ══ in flight ══ -->
+    <text x="22" y="54" font-size="7.5" font-weight="800" letter-spacing="0.07em" fill="#64748B">IN FLIGHT</text>
+    <g class="clickable" data-key="sIn">
+      <rect class="box" x="22" y="62" width="112" height="26" rx="8" fill="rgba(148,163,184,0.08)" stroke="#94A3B8" stroke-width="1.3"/>
+      <text x="78" y="78" font-size="8" font-weight="700" fill="#E2E8F0" text-anchor="middle">text_pending</text>
+      <path d="M 136 75 L 156 75" stroke="#94A3B8" stroke-width="1.4" marker-end="url(#sA)"/>
+      <rect class="box" x="158" y="62" width="112" height="26" rx="8" fill="rgba(148,163,184,0.08)" stroke="#94A3B8" stroke-width="1.3"/>
+      <text x="214" y="78" font-size="8" font-weight="700" fill="#E2E8F0" text-anchor="middle">text_running</text>
+      <path d="M 272 75 L 292 75" stroke="#94A3B8" stroke-width="1.4" marker-end="url(#sA)"/>
+      <rect class="box" x="294" y="62" width="116" height="26" rx="8" fill="rgba(148,163,184,0.08)" stroke="#94A3B8" stroke-width="1.3"/>
+      <text x="352" y="78" font-size="8" font-weight="700" fill="#E2E8F0" text-anchor="middle">extract_pending</text>
+      <path d="M 412 75 L 432 75" stroke="#94A3B8" stroke-width="1.4" marker-end="url(#sA)"/>
+      <rect class="box" x="434" y="62" width="104" height="26" rx="8" fill="rgba(148,163,184,0.08)" stroke="#94A3B8" stroke-width="1.3"/>
+      <text x="486" y="78" font-size="8" font-weight="700" fill="#E2E8F0" text-anchor="middle">extract_running</text>
+      <text class="subtext" x="22" y="102" font-size="6.5" fill="#94A3B8">A _running state is enterable only from its own _pending, and that swap is one atomic UPDATE &mdash; so a second worker matches zero rows and raises, rather than becoming a copy.</text>
     </g>
 
-    <text x="14" y="94" font-size="8" font-weight="800" letter-spacing="0.07em" fill="#64748B">SETTLED</text>
+    <!-- ══ settling ══ -->
+    <path d="M 470 90 L 470 158" fill="none" stroke="#4ADE80" stroke-width="1.5" marker-end="url(#sG)"/>
+    <text x="476" y="118" font-size="6.2" fill="#4ADE80">gates pass</text>
+    <path d="M 448 90 Q 360 120 300 158" fill="none" stroke="#FBBF24" stroke-width="1.5" marker-end="url(#sY)"/>
+    <text x="392" y="116" font-size="6.2" fill="#FBBF24">gate fails</text>
+    <path d="M 436 92 Q 220 130 96 158" fill="none" stroke="#F87171" stroke-width="1.5" marker-end="url(#sR)"/>
+    <text x="150" y="128" font-size="6.2" fill="#F87171">5 attempts used</text>
 
-    <!-- ══ complete ══ -->
-    <path d="M 468 68 L 468 112" stroke="#4ADE80" stroke-width="1.5" marker-end="url(#sArrowG)"/>
-    <text x="474" y="86" font-size="6.2" fill="#4ADE80">every blocking gate passed</text>
-    <rect x="392" y="114" width="132" height="40" rx="10" fill="rgba(74,222,128,0.10)" stroke="#4ADE80" stroke-width="1.9"/>
-    <text x="458" y="132" font-size="10.5" font-weight="800" fill="#4ADE80" text-anchor="middle">complete</text>
-    <text x="458" y="145" font-size="6" fill="#94A3B8" text-anchor="middle">absorbing &mdash; no exit exists</text>
-    <path d="M 458 156 L 458 176" stroke="#4ADE80" stroke-width="1.3" marker-end="url(#sArrowG)"/>
-    <text x="458" y="188" font-size="6.2" fill="#94A3B8" text-anchor="middle">document.extracted &rarr; outbox</text>
-    <text x="458" y="197" font-size="6.2" fill="#94A3B8" text-anchor="middle">&rarr; sink &rarr; posted_documents</text>
+    <text x="22" y="152" font-size="7.5" font-weight="800" letter-spacing="0.07em" fill="#64748B">SETTLED</text>
 
-    <!-- ══ review ══ -->
-    <path d="M 452 66 Q 340 94 246 112" stroke="#FBBF24" stroke-width="1.5" marker-end="url(#sArrowA)"/>
-    <rect x="150" y="114" width="132" height="40" rx="10" fill="rgba(251,191,36,0.10)" stroke="#FBBF24" stroke-width="1.9"/>
-    <text x="216" y="132" font-size="10.5" font-weight="800" fill="#FBBF24" text-anchor="middle">review</text>
-    <text x="216" y="145" font-size="6" fill="#94A3B8" text-anchor="middle">parked &mdash; human judgement</text>
+    <g class="clickable" data-key="sFailed">
+      <rect class="box" x="22" y="160" width="120" height="38" rx="10" fill="rgba(248,113,113,0.10)" stroke="#F87171" stroke-width="1.8"/>
+      <text x="82" y="178" font-size="10" font-weight="800" fill="#F87171" text-anchor="middle">failed</text>
+      <text x="82" y="190" font-size="6" fill="#94A3B8" text-anchor="middle">last_error says why</text>
+      <text class="subtext" x="22" y="212" font-size="6.3" fill="#CBD5E1">In: the sweeper capped attempts at 5, or triage hit a</text>
+      <text class="subtext" x="22" y="221" font-size="6.3" fill="#CBD5E1">hard failure (zero-byte, corrupt, over the page ceiling).</text>
+      <text class="subtext" x="22" y="230" font-size="6.3" fill="#CBD5E1">Out: dlq_replay, and only once build_sha or prompt_version</text>
+      <text class="subtext" x="22" y="239" font-size="6.3" fill="#CBD5E1">has moved &mdash; the same code on the same input fails alike.</text>
+    </g>
 
-    <text x="150" y="168" font-size="6.2" font-weight="700" fill="#FBBF24">entered from</text>
-    <text x="150" y="178" font-size="6" fill="#CBD5E1">extract_running &middot; a blocking gate failed, or all 6 calls exhausted</text>
-    <text x="150" y="187" font-size="6" fill="#CBD5E1">extract_running &middot; business_dedupe caught a duplicate</text>
-    <text x="150" y="196" font-size="6" fill="#CBD5E1">extract_running &middot; auto-post kill switch off (passed, held back)</text>
-    <text x="150" y="205" font-size="6" fill="#CBD5E1">text_running &middot; triage rejected the upload</text>
+    <g class="clickable" data-key="sReview">
+      <rect class="box" x="240" y="160" width="120" height="38" rx="10" fill="rgba(251,191,36,0.10)" stroke="#FBBF24" stroke-width="1.8"/>
+      <text x="300" y="178" font-size="10" font-weight="800" fill="#FBBF24" text-anchor="middle">review</text>
+      <text x="300" y="190" font-size="6" fill="#94A3B8" text-anchor="middle">human judgement</text>
+      <text class="subtext" x="240" y="212" font-size="6.3" fill="#CBD5E1">In: a blocking gate failed, all 6 model calls were</text>
+      <text class="subtext" x="240" y="221" font-size="6.3" fill="#CBD5E1">exhausted, business_dedupe caught a duplicate, or</text>
+      <text class="subtext" x="240" y="230" font-size="6.3" fill="#CBD5E1">the kill switch is off &mdash; that last one passed every</text>
+      <text class="subtext" x="240" y="239" font-size="6.3" fill="#CBD5E1">gate. Out: only an operator. Nothing automatic.</text>
+    </g>
 
-    <!-- ══ failed ══ -->
-    <path d="M 430 66 Q 240 92 78 112" stroke="#F87171" stroke-width="1.5" marker-end="url(#sArrowR)"/>
-    <rect x="14" y="114" width="118" height="40" rx="10" fill="rgba(248,113,113,0.10)" stroke="#F87171" stroke-width="1.9"/>
-    <text x="73" y="132" font-size="10.5" font-weight="800" fill="#F87171" text-anchor="middle">failed</text>
-    <text x="73" y="145" font-size="6" fill="#94A3B8" text-anchor="middle">parked &mdash; last_error says why</text>
+    <g class="clickable" data-key="sComplete">
+      <rect class="box" x="418" y="160" width="120" height="38" rx="10" fill="rgba(74,222,128,0.10)" stroke="#4ADE80" stroke-width="1.8"/>
+      <text x="478" y="178" font-size="10" font-weight="800" fill="#4ADE80" text-anchor="middle">complete</text>
+      <text x="478" y="190" font-size="6" fill="#94A3B8" text-anchor="middle">absorbing &mdash; no exit</text>
+      <text class="subtext" x="418" y="212" font-size="6.3" fill="#CBD5E1">The only state with no outgoing</text>
+      <text class="subtext" x="418" y="221" font-size="6.3" fill="#CBD5E1">transition. Emits document.extracted</text>
+      <text class="subtext" x="418" y="230" font-size="6.3" fill="#CBD5E1">&rarr; outbox &rarr; sink &rarr; posted_documents,</text>
+      <text class="subtext" x="418" y="239" font-size="6.3" fill="#CBD5E1">so complete briefly precedes posted.</text>
+    </g>
 
-    <text x="14" y="168" font-size="6.2" font-weight="700" fill="#F87171">entered from</text>
-    <text x="14" y="178" font-size="6" fill="#CBD5E1">either _running state &middot; sweeper</text>
-    <text x="14" y="187" font-size="6" fill="#CBD5E1">capped attempts at 5</text>
-    <text x="14" y="196" font-size="6" fill="#CBD5E1">text_running &middot; triage hard failure</text>
-    <text x="14" y="205" font-size="6" fill="#CBD5E1">(zero-byte, corrupt, page ceiling)</text>
+    <!-- ══ the three ways back, drawn as transitions rather than listed ══ -->
+    <text x="22" y="252" font-size="7.5" font-weight="800" letter-spacing="0.07em" fill="#64748B">WAYS BACK</text>
+    <text x="88" y="252" font-size="6.3" fill="#64748B">every one targets a _pending state, so none can race a live worker</text>
 
-    <!-- ══ the ways back ══ -->
-    <text x="14" y="234" font-size="8" font-weight="800" letter-spacing="0.07em" fill="#64748B">WAYS BACK &mdash; all target a _pending state, so none can race a live worker</text>
+    <path d="M 300 158 Q 330 128 352 92" fill="none" stroke="#FBBF24" stroke-width="1.4" stroke-dasharray="4 3" marker-end="url(#sY)"/>
+    <text x="306" y="266" font-size="6.5" font-weight="700" fill="#FBBF24">force_redrive</text>
+    <text x="306" y="275" font-size="6" fill="#94A3B8">review &rarr; extract_pending &middot; re-extract, gates run again</text>
 
-    <rect x="14" y="244" width="532" height="42" rx="9" fill="rgba(251,191,36,0.05)" stroke="#FBBF24" stroke-width="1.1" stroke-dasharray="4 3"/>
-    <text x="26" y="259" font-size="7" font-weight="700" fill="#FBBF24">review &rarr; extract_pending</text>
-    <text x="150" y="259" font-size="6.5" fill="#CBD5E1">operator force_redrive &mdash; re-extracts from scratch, must pass the gates again,</text>
-    <text x="150" y="268" font-size="6.5" fill="#CBD5E1">so it only helps if the prompt, model or code has changed since.</text>
-    <text x="26" y="280" font-size="6.2" fill="#64748B">manual only</text>
+    <path d="M 362 179 L 414 179" fill="none" stroke="#4ADE80" stroke-width="1.4" stroke-dasharray="4 3" marker-end="url(#sG)"/>
+    <text x="306" y="288" font-size="6.5" font-weight="700" fill="#4ADE80">accept_review</text>
+    <text x="306" y="297" font-size="6" fill="#94A3B8">review &rarr; complete &middot; keep the result, overrule the gates</text>
 
-    <rect x="14" y="292" width="532" height="42" rx="9" fill="rgba(74,222,128,0.05)" stroke="#4ADE80" stroke-width="1.1" stroke-dasharray="4 3"/>
-    <text x="26" y="307" font-size="7" font-weight="700" fill="#4ADE80">review &rarr; complete</text>
-    <text x="150" y="307" font-size="6.5" fill="#CBD5E1">operator accept_review &mdash; no re-extraction at all. A human read the existing</text>
-    <text x="150" y="316" font-size="6.5" fill="#CBD5E1">result, judged it correct, and overruled the gates; stamped operator_override.</text>
-    <text x="26" y="328" font-size="6.2" fill="#64748B">manual only</text>
+    <path d="M 82 158 Q 50 120 70 92" fill="none" stroke="#F87171" stroke-width="1.4" stroke-dasharray="4 3" marker-end="url(#sR)"/>
+    <text x="22" y="266" font-size="6.5" font-weight="700" fill="#F87171">dlq_replay</text>
+    <text x="22" y="275" font-size="6" fill="#94A3B8">failed &rarr; a _pending state</text>
+    <text x="22" y="284" font-size="6" fill="#64748B">on deploy only</text>
+    <text x="22" y="293" font-size="6" fill="#64748B">the other two are manual</text>
 
-    <rect x="14" y="340" width="532" height="42" rx="9" fill="rgba(248,113,113,0.05)" stroke="#F87171" stroke-width="1.1" stroke-dasharray="4 3"/>
-    <text x="26" y="355" font-size="7" font-weight="700" fill="#F87171">failed &rarr; text/extract_pending</text>
-    <text x="150" y="355" font-size="6.5" fill="#CBD5E1">dlq_replay &mdash; the one automatic way back, and only for documents whose</text>
-    <text x="150" y="364" font-size="6.5" fill="#CBD5E1">build_sha or prompt_version moved since they failed. Otherwise it would</text>
-    <text x="150" y="373" font-size="6.5" fill="#CBD5E1">re-run the same input through the same code and fail identically.</text>
-    <text x="26" y="376" font-size="6.2" fill="#64748B">on deploy</text>
-
-    <text x="14" y="400" font-size="6.5" font-weight="700" fill="#F87171">Nothing automatic ever leaves review &mdash; dlq_replay skips it entirely, and the sweeper only claims in-flight states.</text>
-
-    <!-- ══ why this is safe ══ -->
-    <rect x="14" y="414" width="532" height="66" rx="10" fill="rgba(96,165,250,0.06)" stroke="#60A5FA" stroke-width="1.2" stroke-dasharray="5 4"/>
-    <text x="28" y="432" font-size="8" font-weight="800" fill="#60A5FA">Why a re-drive can't corrupt anything</text>
-    <text x="28" y="447" font-size="7.5" fill="#CBD5E1"><tspan font-weight="700">One worker at a time.</tspan> Entering a _running state is only legal from its own _pending, and that</text>
-    <text x="28" y="459" font-size="7.5" fill="#CBD5E1">swap is one atomic UPDATE. The second worker to try matches zero rows and raises.</text>
-    <text x="28" y="474" font-size="7.5" fill="#CBD5E1"><tspan font-weight="700">One result, ever.</tspan> The result column is writable once, so a worker finishing after a re-drive has its answer discarded.</text>
-
-    <rect x="14" y="490" width="532" height="58" rx="10" fill="rgba(100,116,139,0.06)" stroke="#64748B" stroke-width="1.2" stroke-dasharray="5 4"/>
-    <text x="28" y="508" font-size="8" font-weight="800" fill="#94A3B8">Reading a run</text>
-    <text x="28" y="523" font-size="7.5" fill="#CBD5E1"><tspan font-weight="700">&quot;8/8 settled&quot;</tspan> means all eight reached one of the three settled states &mdash; not that all eight succeeded.</text>
-    <text x="28" y="535" font-size="7.5" fill="#CBD5E1">A jump in <tspan font-weight="700">review</tspan> usually means inference degraded, not that the documents were odd.</text>
-    <text x="28" y="545" font-size="7.5" fill="#CBD5E1">Nothing retries <tspan font-weight="700">failed</tspan> or <tspan font-weight="700">review</tspan>, so they pile up while throughput looks fine. Hence the daily report.</text>
+    <!-- ══ outside the database: how to read a run ══ -->
+    <rect x="8" y="318" width="544" height="88" rx="12" fill="rgba(100,116,139,0.06)" stroke="#64748B" stroke-width="1.2" stroke-dasharray="5 4"/>
+    <text x="26" y="338" font-size="8" font-weight="800" fill="#94A3B8">Reading a run</text>
+    <text x="26" y="355" font-size="7.2" fill="#CBD5E1"><tspan font-weight="700">&quot;8/8 settled&quot;</tspan> means all eight reached one of the three settled states &mdash; not that all eight succeeded.</text>
+    <text x="26" y="370" font-size="7.2" fill="#CBD5E1">A jump in <tspan font-weight="700">review</tspan> usually means inference degraded, not that the documents were unusual.</text>
+    <text x="26" y="385" font-size="7.2" fill="#CBD5E1">Nothing retries <tspan font-weight="700">failed</tspan> or <tspan font-weight="700">review</tspan>, so they accumulate while throughput looks perfectly healthy.</text>
+    <text x="26" y="400" font-size="7.2" fill="#CBD5E1">That silence is why the terminal-state report runs on a schedule.</text>
   </svg>
 
   <div class="src">Source: docpipeline/core/ledger.py (ALLOWED_TRANSITIONS) &middot; reconciliation/{sweeper,dlq_replay,operator}.py &middot; stages/extraction_4.py.</div>
@@ -1073,7 +1071,7 @@ applyStep(0);
    their icon+title centered by default via .head -- multi-box replica
    nodes (OCR shard, extraction funnel, outbox sink) skip that; their
    title is already static in every box, there's nothing to center. ── */
-document.querySelectorAll('#archSvg .clickable').forEach(el=>{
+document.querySelectorAll('#archSvg .clickable, #stateSvg .clickable').forEach(el=>{
   el.addEventListener('click', ()=>el.classList.toggle('expanded'));
 
   const box=el.querySelector('rect.box'), head=el.querySelector('.head');
