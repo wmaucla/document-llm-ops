@@ -16,6 +16,14 @@ model, not mocks.
 ledger, text production with OCR fan-out and scatter-gather join, extraction with five quality
 gates and the outbox, and an async reconciliation strip](docs/architecture.png)
 
+Three terminal states, but only `complete` is truly final — `review` and `failed` are parking
+states that are legal to leave, and the question is whether anything ever does:
+
+![Document end states: complete is absorbing and posts downstream; review is entered by triage
+rejects, exhausted gates, duplicate detection or the kill switch, and nothing automatic ever leaves
+it; failed is entered by the attempt cap and left only when the build or prompt version
+changes](docs/document-states.png)
+
 **Status: live-verified end to end**, twice over via two genuinely separate paths that share no
 infrastructure — `make e2e` (host processes, mock LLM, ~15s) and `make e2e-k8s` (Kubernetes
 Deployments, real LLM, entirely ArgoCD-driven, KEDA actually observed scaling a Deployment from 1
