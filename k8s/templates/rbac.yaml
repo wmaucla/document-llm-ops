@@ -1,0 +1,37 @@
+{{- if .Values.gpuWatchdog.enabled }}
+# The GPU watchdog is the only thing here that talks to the Kubernetes API; it
+# deletes the ollama pod on silent CPU fallback (AGENT.md bug #2). Scoped to one
+# namespace and pods only, so a leak of this credential means "can restart pods
+# in this namespace" and nothing more.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: docpipeline-gpu-watchdog
+  annotations: {argocd.argoproj.io/sync-wave: "0"}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: docpipeline-gpu-watchdog
+  annotations: {argocd.argoproj.io/sync-wave: "0"}
+rules:
+# `list` is required alongside `delete`: the watchdog deletes by label selector
+# (a deletecollection call), which the API server authorises as delete + list.
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["list", "delete", "deletecollection"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: docpipeline-gpu-watchdog
+  annotations: {argocd.argoproj.io/sync-wave: "0"}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: docpipeline-gpu-watchdog
+subjects:
+- kind: ServiceAccount
+  name: docpipeline-gpu-watchdog
+  namespace: {{ .Release.Namespace }}
+{{- end }}

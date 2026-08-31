@@ -24,20 +24,33 @@ log = logging.getLogger(__name__)
 
 
 def _claim_batch(cur, batch_cap: int) -> list[dict]:
+    # Per-stage thresholds, not one global one. A real extraction call takes
+    # 150-450s and the document sits in extract_running for all of it, so the
+    # 30s threshold that suits text production would redrive documents that
+    # are being processed successfully right now — burning their attempt
+    # budget, duplicating work onto the single shared Ollama pod, and growing
+    # consumer lag while the original worker goes on to succeed. See
+    # config.EXTRACT_STUCK_THRESHOLD_SECONDS.
     cur.execute(
         """
         SELECT doc_id, state, gcs_path, page_count, has_text_layer, shards_total,
                priority, text_attempts, extract_attempts
           FROM documents
-         WHERE state = ANY(%(states)s)
-           AND state_updated_at < now() - (%(threshold)s || ' seconds')::interval
+         WHERE (
+                 (state = ANY(%(text_states)s)
+                  AND state_updated_at < now() - (%(text_threshold)s || ' seconds')::interval)
+              OR (state = ANY(%(extract_states)s)
+                  AND state_updated_at < now() - (%(extract_threshold)s || ' seconds')::interval)
+               )
          ORDER BY priority DESC, state_updated_at ASC
          LIMIT %(cap)s
          FOR UPDATE SKIP LOCKED
         """,
         {
-            "states": list(ledger.IN_FLIGHT_STATES),
-            "threshold": config.STUCK_THRESHOLD_SECONDS,
+            "text_states": list(ledger.TEXT_STATES),
+            "text_threshold": config.STUCK_THRESHOLD_SECONDS,
+            "extract_states": list(ledger.EXTRACT_STATES),
+            "extract_threshold": config.EXTRACT_STUCK_THRESHOLD_SECONDS,
             "cap": batch_cap,
         },
     )
@@ -57,6 +70,12 @@ def _claim_batch(cur, batch_cap: int) -> list[dict]:
             max_attempts = config.MAX_TEXT_ATTEMPTS if is_text_stage else config.MAX_EXTRACT_ATTEMPTS
             if attempts >= max_attempts:
                 ledger.transition(cur, row["doc_id"], "failed")
+                # Without this the column stays empty and a `failed` document
+                # carries no reason at all — see ledger.set_last_error.
+                ledger.set_last_error(
+                    cur, row["doc_id"],
+                    f"sweeper: exceeded attempt cap in {row['state']} ({attempts}/{max_attempts})",
+                )
                 log.warning("doc %s exceeded attempt cap in %s -> failed (DLQ)", row["doc_id"], row["state"])
                 continue
             ledger.increment_attempts(cur, row["doc_id"], "text_attempts" if is_text_stage else "extract_attempts")

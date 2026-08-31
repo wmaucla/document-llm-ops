@@ -20,6 +20,11 @@ from psycopg.types.json import Json
 from docpipeline import config
 
 IN_FLIGHT_STATES = ("text_pending", "text_running", "extract_pending", "extract_running")
+# Split because the two stages have wildly different legitimate durations and
+# therefore need different stuck-detection thresholds — see
+# config.EXTRACT_STUCK_THRESHOLD_SECONDS and sweeper._claim_batch.
+TEXT_STATES = ("text_pending", "text_running")
+EXTRACT_STATES = ("extract_pending", "extract_running")
 TERMINAL_STATES = ("complete", "failed")
 
 # "The invariant that kills most illegal transitions: a _running state may
@@ -52,7 +57,10 @@ class IllegalTransition(Exception):
 
 def connect(role: str = "rw", autocommit: bool = False) -> psycopg.Connection:
     dsn = config.PG_DSN_RW if role == "rw" else config.PG_DSN_RO
-    conn = psycopg.connect(dsn, row_factory=dict_row)
+    conn = psycopg.connect(
+        dsn, row_factory=dict_row,
+        options=f"-c statement_timeout={config.PG_STATEMENT_TIMEOUT_MS}",
+    )
     conn.autocommit = autocommit
     return conn
 
@@ -271,6 +279,18 @@ def increment_attempts(cur, doc_id: str, column: str) -> int:
         (doc_id,),
     )
     return cur.fetchone()[column]
+
+
+def set_last_error(cur, doc_id: str, message: str) -> None:
+    """Records *why* a document ended up where it is.
+
+    Exists because the sweeper's give-up path used to transition a document
+    straight to `failed` without ever writing this column, so every
+    attempt-capped document carried an empty `last_error` — which then showed
+    up repeatedly in debugging evidence trails explaining nothing, and was once
+    mistaken for a signal about *how* the document died.
+    """
+    cur.execute("UPDATE documents SET last_error = %s WHERE doc_id = %s", (message, doc_id))
 
 
 def reset_repair_attempts(cur, doc_id: str) -> None:

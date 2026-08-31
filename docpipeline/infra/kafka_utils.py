@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import json
 import logging
+import random
+import time
 
 from confluent_kafka import Consumer, KafkaError, KafkaException, Producer
 from confluent_kafka.admin import AdminClient, NewTopic
@@ -45,26 +47,47 @@ def make_producer() -> Producer:
 
 
 def make_consumer(group_id: str, topics: list[str]) -> Consumer:
-    c = Consumer(
-        {
-            "bootstrap.servers": config.KAFKA_BOOTSTRAP_SERVERS,
-            "group.id": group_id,
-            "auto.offset.reset": "earliest",
-            "enable.auto.commit": False,
-            "max.poll.interval.ms": config.KAFKA_MAX_POLL_INTERVAL_MS,
-        }
-    )
+    # See config.py's KAFKA_JOIN_JITTER_SECONDS -- staggers simultaneous
+    # joins from a KEDA-scaled Deployment's replicas, all of which restart at
+    # the same instant on a rollout and would otherwise hit the broker's
+    # JoinGroup/SyncGroup at nearly the same time.
+    if config.KAFKA_JOIN_JITTER_SECONDS > 0:
+        time.sleep(random.uniform(0, config.KAFKA_JOIN_JITTER_SECONDS))
+    conf = {
+        "bootstrap.servers": config.KAFKA_BOOTSTRAP_SERVERS,
+        "group.id": group_id,
+        "auto.offset.reset": "earliest",
+        "enable.auto.commit": False,
+        "max.poll.interval.ms": config.KAFKA_MAX_POLL_INTERVAL_MS,
+    }
+    if config.KAFKA_CONSUMER_DEBUG:
+        conf["debug"] = "consumer,cgrp"
+    c = Consumer(conf)
     c.subscribe(topics)
     return c
 
 
-def publish(producer: Producer, topic: str, payload: dict, headers: dict | None = None, key: str | None = None) -> None:
+def publish(
+    producer: Producer,
+    topic: str,
+    payload: dict,
+    headers: dict | None = None,
+    key: str | None = None,
+    on_delivery=None,
+) -> None:
+    """Enqueue one message. Delivery is asynchronous — `produce()` returning
+    means librdkafka accepted it into its local queue, *not* that the broker
+    has it. Callers that must not lose the message (the outbox relay) pass
+    `on_delivery` and check `flush()`'s return value; without both, a failed
+    delivery is silently invisible.
+    """
     kafka_headers = [(k, str(v).encode()) for k, v in (headers or {}).items()]
     producer.produce(
         topic,
         key=(key or payload.get("doc_id", "")).encode(),
         value=json.dumps(payload).encode(),
         headers=kafka_headers or None,
+        on_delivery=on_delivery,
     )
     producer.poll(0)
 

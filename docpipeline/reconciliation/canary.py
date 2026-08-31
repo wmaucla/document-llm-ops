@@ -19,7 +19,7 @@ from docpipeline.reconciliation import orphan_detector_0 as orphan_detector
 log = logging.getLogger(__name__)
 
 
-def _canary_pdf_bytes(invoice_no: str) -> bytes:
+def synthetic_invoice_pdf_bytes(invoice_no: str) -> bytes:
     import io
 
     from reportlab.lib.pagesizes import A4
@@ -65,7 +65,7 @@ def run_canary(
     if extraction_mode is None:
         extraction_mode = config.EXTRACTION_MODE
     invoice_no = f"CANARY-{uuid.uuid4().hex[:12]}"
-    data = _canary_pdf_bytes(invoice_no)
+    data = synthetic_invoice_pdf_bytes(invoice_no)
     info = gcs.upload_bytes(f"inbox/_canary_{uuid.uuid4().hex}.pdf", data, "application/pdf")
 
     conn = ledger.connect(role="ro")

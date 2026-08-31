@@ -32,12 +32,7 @@ def _force_mock_extraction_mode():
     config.EXTRACTION_MODE = original
 
 
-@pytest.fixture(scope="session", autouse=True)
-def _clean_ledger_before_session():
-    """This suite runs against the shared local dev Postgres, not a per-run
-    sandbox — without this, a previous pytest invocation's (or a manual
-    fixtures/run_local.py smoke test's) leftover 'complete' rows collide with
-    this session's business_dedupe checks on the next run."""
+def _truncate_ledger() -> None:
     # pipeline_rw doesn't own the outbox/attempt_log sequences, so RESTART
     # IDENTITY (used by the superuser-run reset task) isn't available here.
     c = ledger.connect(role="rw", autocommit=True)
@@ -48,7 +43,24 @@ def _clean_ledger_before_session():
         )
         cur.execute("UPDATE feature_flags SET value = true WHERE key = 'auto_post_enabled'")
     c.close()
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _clean_ledger_before_session():
+    """This suite runs against the shared local dev Postgres, not a per-run
+    sandbox — without the before-truncate, a previous pytest invocation's (or
+    a manual fixtures/run_local.py smoke test's) leftover 'complete' rows
+    collide with this session's business_dedupe checks on the next run.
+    Without the after-truncate, every test-inserted 'test-*' document (blast
+    tests, batch-cap tests, ...) sits forever in whatever non-terminal state
+    that specific unit test left it in — harmless in isolation, but confirmed
+    live to make `summarize.py` (now a real pass/fail gate — see AGENT.md's
+    "Known open bugs") wrongly report a completely unrelated `make e2e-k8s`
+    or `make summary` run as stuck, when it's actually just this suite's own
+    debris from an unrelated earlier `make test`."""
+    _truncate_ledger()
     yield
+    _truncate_ledger()
 
 
 @pytest.fixture

@@ -7,18 +7,21 @@ image:
 
 configMapName: docpipeline-config
 
-# Every consumer's env — see the design doc's "Topics vs deployments": topics
-# are cheap, deployments cost ops. This ConfigMap is what turns the same
-# docpipeline image into 8 different single-purpose Deployments below.
+# Gates templates/rbac.yaml (ServiceAccount + Role + RoleBinding). Separate
+# from the config.GPU_WATCHDOG_ENABLED env var below: this one decides whether
+# the RBAC objects exist at all, that one decides whether the process does
+# anything once running. Both are on in-cluster; turn this off and the
+# watchdog's pod will start but fail its delete calls with a 403.
+gpuWatchdog:
+  enabled: true
+
+# Every consumer's env. This ConfigMap is what turns one docpipeline image into
+# the 9 single-purpose Deployments below.
 #
-# Postgres/Redpanda/fake-gcs-server/Redis run purely in-cluster
-# (templates/infra.yaml, wave -1 — same ArgoCD Application as everything
-# else here, no raw-kubectl exception), reached by normal cluster DNS.
-# This is `make e2e-k8s`-only: host-mode `make e2e` still uses
-# docker-compose directly (see the repo README's "Tool substitutions"
-# deviation) — the two paths no longer share any infrastructure or a single
-# ledger, unlike before this migration. litellm/langfuse are the sibling
-# mlops-llm-repo's own in-cluster stack, also reached by normal cluster DNS.
+# Postgres/Redpanda/fake-gcs-server/Redis run in-cluster (templates/infra.yaml,
+# wave -1), litellm/langfuse come from the sibling repo's stack; all reached by
+# cluster DNS. e2e-k8s-only -- host-mode `make e2e` uses docker-compose and
+# shares no infrastructure or ledger with this path.
 config:
   PGHOST: "postgres.default.svc.cluster.local"
   PGPORT: "5432"
@@ -29,6 +32,10 @@ config:
   PIPELINE_RO_PASSWORD: "pipeline_ro_pw"
 
   KAFKA_BOOTSTRAP_SERVERS: "redpanda.default.svc.cluster.local:9092"
+  # Off by default in config.py -- only meaningful where a KEDA-scaled
+  # Deployment's replicas can restart simultaneously and join the same
+  # consumer group at once (see AGENT.md's "Known open bugs" #1).
+  KAFKA_JOIN_JITTER_SECONDS: "8"
 
   STORAGE_EMULATOR_HOST: "http://fake-gcs-server.default.svc.cluster.local:4443"
   GCS_BUCKET: "docpipeline-local"
@@ -37,6 +44,11 @@ config:
   REDIS_URL: "redis://redis.default.svc.cluster.local:6379/0"
 
   OCR_ENGINE: "mock"
+  # Must be GCS in-cluster: the fixtures Job writes the mock-OCR registry and
+  # ocr-shard reads it, and they are different pods with different filesystems.
+  # With a local path ocr-shard finds only the stale copy baked into the image
+  # and every OCR document extracts from "unregistered page".
+  MOCK_OCR_REGISTRY_URI: "gs://docpipeline-local/fixtures/mock_ocr_registry.json"
   OCR_DPI: "150"
 
   SHARD_SIZE_PAGES: "1"
@@ -61,6 +73,20 @@ config:
   LANGFUSE_HOST: "http://langfuse-web.langfuse.svc.cluster.local:3000"
   LANGFUSE_PUBLIC_KEY: "pk-lf-demo-local-0000"
   LANGFUSE_SECRET_KEY: "sk-lf-demo-local-0000"
+
+  # GPU watchdog (see the gpu-watchdog service below and AGENT.md's bug #2).
+  # Off in config.py's own default because host-mode `make e2e` runs mock
+  # extraction with no ollama at all; on here, same pattern as EXTRACTION_MODE.
+  GPU_WATCHDOG_ENABLED: "1"
+  OLLAMA_BASE_URL: "http://ollama.default.svc.cluster.local:11434"
+  # Must stay in sync with LITELLM_TIER_MODELS in config.py, which maps
+  # cheap->cheap-fast->llama3.2:1b and strong->cheap-balanced->qwen2.5:1.5b via
+  # mlops-llm-repo/k8s/litellm.yaml. Both are pinned, not just the cheap tier:
+  # a strong-tier escalation that cold-loads its model is another chance to
+  # land on CPU, mid-pipeline.
+  OLLAMA_MODELS: "llama3.2:1b,qwen2.5:1.5b"
+  GPU_WATCHDOG_INTERVAL_SECONDS: "30"
+  GPU_WATCHDOG_RESTART_COOLDOWN_SECONDS: "300"
 
 # One Deployment per consumer group — see the design doc's "Complete topic
 # list" and "Topics vs deployments". `name` becomes the Deployment/container
@@ -96,13 +122,21 @@ services:
       requests: {cpu: 100m, memory: 128Mi}
       limits: {cpu: 200m, memory: 256Mi}
 
-  # KEDA scales this one on ocr.completed consumer lag (see keda section below).
+  # KEDA scales this on ocr.completed lag (see keda section below).
+  #
+  # staleSeconds 300 = the 200s LITELLM_TIMEOUT_SECONDS call bound + 100s for
+  # schema validation, gates and commits. This only works because
+  # extraction_4.py touches /tmp/heartbeat *before and after* every model call,
+  # so staleness tracks one bounded call rather than the whole 1200s message
+  # budget. Remove either touch and this has to grow to the budget instead.
   - name: extraction
     command: ["python", "-m", "docpipeline.stages.extraction_4"]
     replicas: 1
     resources:
       requests: {cpu: 100m, memory: 128Mi}
       limits: {cpu: 500m, memory: 256Mi}
+    livenessProbe:
+      staleSeconds: 300
 
   - name: sink-stub
     command: ["python", "-m", "docpipeline.stages.sink_stub_5"]
@@ -138,6 +172,19 @@ services:
       requests: {cpu: 25m, memory: 64Mi}
       limits: {cpu: 100m, memory: 128Mi}
 
+  # Keeps ollama's models pinned in VRAM and restarts the ollama pod when it
+  # has silently fallen back to CPU (AGENT.md's "Known open bugs" #2). Lives
+  # here, not in the sibling mlops-llm-repo's ollama.yaml, because this repo
+  # deliberately doesn't edit that repo's manifests — see the module docstring.
+  # The only service with a serviceAccountName (templates/rbac.yaml).
+  - name: gpu-watchdog
+    command: ["python", "-m", "docpipeline.reconciliation.gpu_watchdog"]
+    replicas: 1
+    serviceAccountName: docpipeline-gpu-watchdog
+    resources:
+      requests: {cpu: 25m, memory: 64Mi}
+      limits: {cpu: 100m, memory: 128Mi}
+
 # Scales the two deployments the design doc calls out: ocr-shard (~900 CPU
 # fleet in prod) and extraction (token-quota bound in prod). lagThreshold: "1"
 # is artificially low so a local burst actually demonstrates scale-up.
@@ -150,6 +197,10 @@ keda:
       maxReplicaCount: 5
       consumerGroup: ocr-shard
       topic: ocr.shard
+    # Restored to 3 on 2026-08-31, lifting the workaround cap of 1 that had
+    # stood since 2026-08-30 -- on the strength of a deliberate forced-CPU
+    # reproduction under 3 replicas (zero restarts), not a healthy-GPU run,
+    # which cannot exercise the bug at all. See AGENT.md's "Known open bugs" #1.
     - name: extraction
       target: docpipeline-extraction
       minReplicaCount: 1

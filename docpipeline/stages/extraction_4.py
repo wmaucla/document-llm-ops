@@ -19,7 +19,7 @@ from google.api_core.exceptions import NotFound
 
 from docpipeline import config
 from docpipeline.core import artifact, gates, ledger, models
-from docpipeline.infra import kafka_utils
+from docpipeline.infra import heartbeat, kafka_utils
 from docpipeline.stages import llm_client, mock_llm
 
 log = logging.getLogger(__name__)
@@ -74,6 +74,16 @@ def run_funnel(cur, doc: dict, source_text: str, attempt_no: int) -> tuple[dict 
         schema_result_json = None
         repair_hint = None
         for _repair in range(config.MAX_REPAIR_ATTEMPTS + 1):
+            # Touch *before* the call, not only after it. The call is bounded
+            # (LITELLM_TIMEOUT_SECONDS), so a call in progress is evidence the
+            # process is alive, not wedged — and every failure branch below
+            # (timeout, refusal, unparseable) previously looped back here
+            # without touching, so a couple of slow calls could exceed the
+            # livenessProbe's staleness threshold and get a perfectly healthy
+            # pod killed. With this, staleness tracks one bounded call rather
+            # than the whole message's budget, which is what lets the probe
+            # stay tight at 300s instead of growing to EXTRACTION_BUDGET_SECONDS.
+            heartbeat.touch()
             try:
                 raw = _call_model(doc_id, tier, source_text, attempt_no, repair_hint=repair_hint)
             except mock_llm.ExtractionError as exc:
@@ -98,6 +108,12 @@ def run_funnel(cur, doc: dict, source_text: str, attempt_no: int) -> tuple[dict 
                                     outcome="retry", error_class="transient", error_msg=exc.kind)
                 continue
 
+            # We just got a response back from the model -- the exact moment
+            # the wedged-consumer bug's evidence goes silent (see AGENT.md's
+            # "Known open bugs" #1). Everything below this line is local/DB
+            # work with no bounded timeout of its own, so record progress
+            # here rather than only at the top of the poll loop.
+            heartbeat.touch()
             outcome, detail, model = models.validate_schema(raw)
             schema_result_json = {"outcome": outcome, **({"detail": detail} if detail else {})}
             if outcome == "pass":
@@ -242,9 +258,11 @@ def handle_ocr_completed(conn: psycopg.Connection, doc_id: str) -> str:
 def run_forever() -> None:
     conn = ledger.connect(role="rw")
     consumer = kafka_utils.make_consumer(CONSUMER_GROUP, ["ocr.completed"])
+    heartbeat.touch()
     log.info("extraction consumer started")
     while True:
         payload, msg = kafka_utils.poll_json(consumer)
+        heartbeat.touch()
         if payload is None:
             continue
         try:

@@ -14,6 +14,11 @@ spec:
   template:
     metadata: {labels: {app: docpipeline-{{ .name }}}}
     spec:
+      {{- if .serviceAccountName }}
+      # Only the GPU watchdog needs one (Kubernetes API access, see
+      # templates/rbac.yaml); everything else runs as the namespace default.
+      serviceAccountName: {{ .serviceAccountName }}
+      {{- end }}
       containers:
       - name: {{ .name }}
         image: "{{ $.Values.image.repository }}:{{ $.Values.image.tag }}"
@@ -26,6 +31,23 @@ spec:
         {{- if .metricsPort }}
         ports:
         - {containerPort: {{ .metricsPort }}, name: metrics}
+        {{- end }}
+        {{- if .livenessProbe }}
+        # Freshness check on the heartbeat file docpipeline/infra/heartbeat.py
+        # touches (see k8s/values.yaml's comment on this service for why).
+        livenessProbe:
+          exec:
+            command:
+            - sh
+            - -c
+            - test $(( $(date +%s) - $(stat -c %Y /tmp/heartbeat 2>/dev/null || echo 0) )) -lt {{ .livenessProbe.staleSeconds }}
+          initialDelaySeconds: 30
+          periodSeconds: 30
+          # 3, not 1: this container runs at a 500m CPU limit, and a single
+          # throttled `sh`/`date`/`stat` exec must not be enough on its own to
+          # kill a healthy consumer. Three consecutive failures is still only
+          # 90s of extra tolerance on top of staleSeconds.
+          failureThreshold: 3
         {{- end }}
 {{- if .metricsPort }}
 ---
