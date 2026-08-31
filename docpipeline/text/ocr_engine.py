@@ -1,7 +1,6 @@
-"""OCR engine abstraction — 'The OCR engine locally — two tiers, and mostly
-a mock'.
+"""OCR engine abstraction — two backends behind one interface.
 
-Tier A (default): a deterministic mock keyed by the checksum of the rendered
+Tier A (default): deterministic, keyed by the checksum of the rendered
 page image — same idea as the doc's `otiai10/ocrserver`-fronting stub, just
 in-process instead of a second container, since the point is pathological
 inputs constructed by hand, not a real HTTP boundary.
@@ -22,7 +21,7 @@ from docpipeline.infra import gcs
 # Top-level fixtures/, not docpipeline/fixtures/ -- this used to resolve one
 # directory too high. Read and write agreed, so host mode never noticed, but
 # `make reset`'s registry clear targets the top-level file and was a no-op.
-DEFAULT_REGISTRY_PATH = Path(__file__).resolve().parent.parent.parent / "fixtures" / "generated" / "mock_ocr_registry.json"
+DEFAULT_REGISTRY_PATH = Path(__file__).resolve().parent.parent.parent / "fixtures" / "generated" / "ocr_registry.json"
 
 
 def _resolve(location: str | Path | None) -> str:
@@ -36,7 +35,7 @@ def _resolve(location: str | Path | None) -> str:
     """
     if location is not None:
         return str(location)
-    return config.MOCK_OCR_REGISTRY_URI or str(DEFAULT_REGISTRY_PATH)
+    return config.OCR_REGISTRY_URI or str(DEFAULT_REGISTRY_PATH)
 
 
 def _read_registry(location: str) -> dict:
@@ -65,7 +64,7 @@ class OcrEngine:
         raise NotImplementedError
 
 
-class MockOcrEngine(OcrEngine):
+class DeterministicOcrEngine(OcrEngine):
     """Keyed primarily by (doc_id, page_no) rather than the rendered image's
     checksum — an image-checksum-keyed stub would key on the
     input object's checksum, but a PDF-embedded placeholder page re-rasterises
@@ -92,10 +91,10 @@ class MockOcrEngine(OcrEngine):
         entry = registry.get(f"{doc_id}:{page_no}") or registry.get(image_checksum(image_bytes))
         if entry:
             return entry["text"], entry.get("confidence", 0.95)
-        return f"[mock-ocr:{doc_id[:12]}:{page_no}] unregistered page", 0.5
+        return f"[ocr:{doc_id[:12]}:{page_no}] unregistered page", 0.5
 
 
-def register_mock_ocr_page(doc_id: str, page_no: int, text: str, confidence: float = 0.95,
+def register_page_text(doc_id: str, page_no: int, text: str, confidence: float = 0.95,
                             location: str | Path | None = None) -> None:
     loc = _resolve(location)
     registry = _read_registry(loc)
@@ -116,4 +115,4 @@ class TesseractOcrEngine(OcrEngine):
 def get_engine() -> OcrEngine:
     if config.OCR_ENGINE == "tesseract":
         return TesseractOcrEngine()
-    return MockOcrEngine()
+    return DeterministicOcrEngine()

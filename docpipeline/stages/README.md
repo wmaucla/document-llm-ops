@@ -5,7 +5,7 @@ docpipeline.stages.<name>`, one Deployment each in `k8s/values.yaml`'s `services
 
 The five sequential-dataflow files carry a trailing step number (a leading digit isn't a valid
 Python identifier, so `triage_1.py`, not `1_triage.py`). Helper modules that aren't independent
-steps — `mock_llm.py`, `llm_client.py` — stay unnumbered. Shared cross-stage helpers (`pdf_utils`,
+steps — `deterministic_extractor.py`, `llm_client.py` — stay unnumbered. Shared cross-stage helpers (`pdf_utils`,
 `ocr_engine`) live in [`../text/`](../text/README.md), not here.
 
 | File | Stage | What it does |
@@ -15,7 +15,7 @@ steps — `mock_llm.py`, `llm_client.py` — stay unnumbered. Shared cross-stage
 | `ocr_shard_3.py` | 2 | Rasterizes + OCRs one page-range shard at a time, independent and parallel across replicas (KEDA-scaled 1–5). The scatter-gather join lives in `core/ledger.py`; the winning shard publishes, it does not reassemble. |
 | `extraction_4.py` | 3 | The extraction funnel: mock → cheap → strong tiers, each result checked by all five quality gates before anything auto-posts. First-writer-wins on commit. KEDA-scaled 1–3. |
 | `sink_stub_5.py` | 4 | The downstream contract's local stand-in — consumes `document.extracted` and does the final write. |
-| `mock_llm.py` | — | The default extraction backend (steps 0–7's deterministic path) — a real component with programmable per-scenario behaviors (`injected_total`, `swapped_roles`, `refusal`, `context_overflow`), not a stub. |
+| `deterministic_extractor.py` | — | The default extraction backend (steps 0–7's deterministic path) — a real component with programmable per-scenario behaviors (`injected_total`, `swapped_roles`, `refusal`, `context_overflow`), not a stub. |
 | `llm_client.py` | — | The real LLM tier (step 8) — calls the sibling repo's LiteLLM gateway. Passes `metadata.trace_id=doc_id` on every call so tier/repair attempts land on one Langfuse trace, and `push_gate_scores()` attaches this repo's own gate outcomes to that trace afterward. |
 
 Every `python -m docpipeline.stages.<name>` invocation (`k8s/values.yaml`'s `services:` list,

@@ -26,7 +26,7 @@ from pypdf import PdfWriter  # noqa: E402
 from reportlab.lib.pagesizes import A4  # noqa: E402
 from reportlab.pdfgen import canvas  # noqa: E402
 
-from docpipeline import fixture_content  # noqa: E402
+from fixtures import content as fixture_content  # noqa: E402
 from docpipeline.infra import gcs  # noqa: E402
 from docpipeline.text import ocr_engine  # noqa: E402
 
@@ -83,14 +83,14 @@ def join_lines(lines: list[str]) -> str:
 def build() -> dict:
     manifest: dict = {}
 
-    def upload(name: str, data: bytes, content_type: str, mock_ocr_pages: list[str] | None = None) -> None:
+    def upload(name: str, data: bytes, content_type: str, ocr_pages_for: list[str] | None = None) -> None:
         if FIXTURE_LIMIT is not None and len(manifest) >= FIXTURE_LIMIT:
             print(f"  {name:28s} skipped (FIXTURE_LIMIT={FIXTURE_LIMIT})")
             return
         info = gcs.upload_bytes(f"inbox/{name}.bin" if content_type == "application/octet-stream" else f"inbox/{name}.pdf", data, content_type)
-        if mock_ocr_pages:
-            for page_no, text in enumerate(mock_ocr_pages):
-                ocr_engine.register_mock_ocr_page(info.doc_id, page_no, text)
+        if ocr_pages_for:
+            for page_no, text in enumerate(ocr_pages_for):
+                ocr_engine.register_page_text(info.doc_id, page_no, text)
         manifest[name] = {
             "doc_id": info.doc_id,
             "gcs_path": info.gcs_path,
@@ -108,7 +108,7 @@ def build() -> dict:
     # density (pdf_worker's text_sanity gate) below the floor.
     garbage_bytes = pdf_with_text_pages([["Digits: 1234567890"], [], [], [], []])
     ocr_pages = [join_lines(fixture_content.GARBAGE_TEXT_LAYER_OCR_LINES)] + [""] * 4
-    upload("digital_garbage_text_layer", garbage_bytes, "application/pdf", mock_ocr_pages=ocr_pages)
+    upload("digital_garbage_text_layer", garbage_bytes, "application/pdf", ocr_pages_for=ocr_pages)
 
     print("1-page scan (single-shard fast path):")
     one_page_lines = [
@@ -117,7 +117,7 @@ def build() -> dict:
         "Currency: USD", "Line Item: Consulting | 800.00", "Subtotal: 800.00",
         "Tax: 0.00", "Total: 800.00",
     ]
-    upload("one_page_scan", blank_pdf(1), "application/pdf", mock_ocr_pages=[join_lines(one_page_lines)])
+    upload("one_page_scan", blank_pdf(1), "application/pdf", ocr_pages_for=[join_lines(one_page_lines)])
 
     print("3-page scan (forces split + 3 shards + the join):")
     page0 = ["INITECH CORP", "Invoice No: INV-30003", "Invoice Date: 2026-06-10",
@@ -125,7 +125,7 @@ def build() -> dict:
     page1 = ["Line Item: Widget A | 1000.00", "Line Item: Widget B | 500.00"]
     page2 = ["Subtotal: 1500.00", "Tax: 0.00", "Total: 1500.00"]
     upload("three_page_scan", blank_pdf(3), "application/pdf",
-           mock_ocr_pages=[join_lines(page0), join_lines(page1), join_lines(page2)])
+           ocr_pages_for=[join_lines(page0), join_lines(page1), join_lines(page2)])
 
     print("25-page scan (exceeds the local page ceiling of 20 -> review):")
     upload("twenty_five_page_scan", blank_pdf(25), "application/pdf")

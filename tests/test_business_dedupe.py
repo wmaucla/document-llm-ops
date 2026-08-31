@@ -5,7 +5,7 @@ only the unique index can."""
 
 import uuid
 
-from docpipeline import fixture_content
+from fixtures import content as fixture_content
 from docpipeline.core import ledger
 from docpipeline.infra import gcs
 from docpipeline.stages import extraction_4 as extraction, pdf_worker_2 as pdf_worker, triage_1 as triage

@@ -7,7 +7,7 @@ serializes on one Ollama pod regardless of extraction replica count).
 
 For fixtures with no real text layer, it also registers ground-truth OCR text keyed by
 `(doc_id, page_no)` via [`../docpipeline/text/ocr_engine.py`](../docpipeline/text/README.md), so
-`MockOcrEngine` can answer deterministically once triage/pdf-worker/ocr-shard route the document
+`DeterministicOcrEngine` can answer deterministically once triage/pdf-worker/ocr-shard route the document
 through the real split/shard/join machinery — the OCR mechanism is exercised for real, only the
 OCR *engine* is mocked.
 

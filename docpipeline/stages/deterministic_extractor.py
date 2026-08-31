@@ -1,4 +1,4 @@
-"""The mock LLM — 'a real component, not a stub'.
+"""The deterministic extraction backend.
 
 Programmable per (doc_id, funnel_version, attempt_no) so every row in 'The
 mock LLM is a real component' table is constructible by hand: grounding
@@ -15,11 +15,7 @@ from __future__ import annotations
 
 import re
 
-
-class ExtractionError(Exception):
-    def __init__(self, kind: str, message: str = ""):
-        super().__init__(message or kind)
-        self.kind = kind  # context_overflow | refusal | transient
+from docpipeline.stages.extractor import ExtractionError
 
 
 _FIELD_PATTERNS = {
@@ -68,7 +64,7 @@ def default_extract(source_text: str) -> dict:
     return fields
 
 
-class MockLLM:
+class DeterministicExtractor:
     """Class-level registry: it must be reachable from whichever process
     registers a behaviour (fixtures/tests) and whichever process later
     consumes it (the extraction consumer) — see docpipeline.text.ocr_engine for

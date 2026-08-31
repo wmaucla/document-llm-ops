@@ -20,7 +20,8 @@ from google.api_core.exceptions import NotFound
 from docpipeline import config
 from docpipeline.core import artifact, gates, ledger, models
 from docpipeline.infra import heartbeat, kafka_utils
-from docpipeline.stages import llm_client, mock_llm
+from docpipeline.stages import deterministic_extractor, llm_client
+from docpipeline.stages.extractor import ExtractionError
 
 log = logging.getLogger(__name__)
 
@@ -33,7 +34,7 @@ def _call_model(doc_id: str, tier: str, source_text: str, attempt_no: int, repai
     loop above doesn't need to know which one is running."""
     if config.EXTRACTION_MODE == "real":
         return llm_client.extract(doc_id, tier, source_text, repair_hint=repair_hint)
-    return mock_llm.MockLLM.extract(doc_id, tier, source_text, attempt_no)
+    return deterministic_extractor.DeterministicExtractor.extract(doc_id, tier, source_text, attempt_no)
 
 
 class MissingShardOutput(Exception):
@@ -86,7 +87,7 @@ def run_funnel(cur, doc: dict, source_text: str, attempt_no: int) -> tuple[dict 
             heartbeat.touch()
             try:
                 raw = _call_model(doc_id, tier, source_text, attempt_no, repair_hint=repair_hint)
-            except mock_llm.ExtractionError as exc:
+            except ExtractionError as exc:
                 if exc.kind == "refusal":
                     gate_results["schema"] = {"outcome": "fail", "detail": {"reason": "refusal"}}
                     return None, gate_results  # no retry, straight to review

@@ -23,7 +23,7 @@ import logging
 from docpipeline import config
 from docpipeline.core import artifact, gates, ledger, models
 from docpipeline.reconciliation import sweeper
-from docpipeline.stages import mock_llm
+from docpipeline.stages import deterministic_extractor
 
 log = logging.getLogger(__name__)
 
@@ -241,8 +241,8 @@ def replay_documents(doc_ids: list[str], tier: str = "cheap") -> list[dict]:
                     continue
                 source_text = "\n".join(p["text"] for p in sorted(assembled["pages"], key=lambda p: p["page_no"]))
                 try:
-                    raw = mock_llm.MockLLM.extract(doc_id, tier, source_text, attempt_no=0)
-                except mock_llm.ExtractionError as exc:
+                    raw = deterministic_extractor.DeterministicExtractor.extract(doc_id, tier, source_text, attempt_no=0)
+                except ExtractionError as exc:
                     results.append({"doc_id": doc_id, "path": "replay", "tier": tier, "error": exc.kind})
                     continue
                 outcome, detail, model = models.validate_schema(raw)

@@ -14,7 +14,7 @@ Two files stay top-level, not subpackaged:
 
 - `config.py` — cross-cutting settings, read by every other module (subpackaging it would just
   add an import hop with no grouping benefit)
-- `fixture_content.py` — shared invoice line-item text used by both `fixtures/generate_fixtures.py`
+- `fixtures/content.py` — shared invoice line-item text used by both `fixtures/generate_fixtures.py`
   and several tests, not pipeline logic
 
 See [AGENT.md](../AGENT.md) for the mechanics and gotchas that aren't obvious from reading the

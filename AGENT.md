@@ -368,11 +368,11 @@ stays current-state only.
    the OCR path (split, shard, scatter-gather join) worked perfectly the whole time — it was
    faithfully carrying placeholder text.
 
-   **Fix:** the registry location is now `config.MOCK_OCR_REGISTRY_URI`, which accepts a `gs://` URI
+   **Fix:** the registry location is now `config.OCR_REGISTRY_URI`, which accepts a `gs://` URI
    or a local path; `k8s/values.yaml` points it at GCS, which every pod already reaches and which
    `artifact.py` already uses for page text and shard output. The local default is also corrected to
    top-level `fixtures/generated/`, so `make reset`'s registry clear stops being a no-op.
-   `MockOcrEngine` caches the registry per instance — `get_engine()` runs once per shard message, so
+   `DeterministicOcrEngine` caches the registry per instance — `get_engine()` runs once per shard message, so
    that is one fetch per message rather than per page, and deliberately not process-global, since
    fixtures can be regenerated under a long-lived consumer and a stale cache there is silently wrong
    text.
@@ -437,7 +437,7 @@ stack, not mocks.
   read/write helpers for OCR page text and shard output).
 - `docpipeline/infra/` — `gcs.py`, `kafka_utils.py` (thin wrappers, no business logic).
 - `docpipeline/text/` — `pdf_utils.py` (shared by `triage_1.py` and `pdf_worker_2.py`) and
-  `ocr_engine.py` (`MockOcrEngine` default, `TesseractOcrEngine` opt-in; shared by `ocr_shard_3.py`
+  `ocr_engine.py` (`DeterministicOcrEngine` default, `TesseractOcrEngine` opt-in; shared by `ocr_shard_3.py`
   and `fixtures/generate_fixtures.py`). Moved out of `stages/` deliberately — both are helpers used
   by *multiple* stages (one of them even by fixture-generation code, not a stage at all), not a
   single stage's own logic, so living next to the 5 numbered sequential-step files made them look
@@ -448,7 +448,7 @@ stack, not mocks.
   `triage_1.py` (ingest + classify + dispatch), `pdf_worker_2.py`/`ocr_shard_3.py` (text
   production), `extraction_4.py` (the funnel: mock/cheap/strong tiers gated at each step),
   `llm_client.py` (real LLM tier, calls the sibling repo's `litellm` Deployment; also pushes
-  gate-outcome Scores to Langfuse — see "Langfuse Score integration" below), `mock_llm.py`
+  gate-outcome Scores to Langfuse — see "Langfuse Score integration" below), `deterministic_extractor.py`
   (default), `sink_stub_5.py`. Every `python -m docpipeline.stages.<name>` invocation
   (`k8s/values.yaml`'s `services:` list, `local_scripts/run_local.py`'s `SERVICES`) uses the numbered
   name; every in-repo import uses `from docpipeline.stages import triage_1 as triage` (etc.) so
@@ -466,9 +466,9 @@ stack, not mocks.
   silently fallen back to CPU — see "Known open bugs" #2; the only module in this repo that talks
   to the Kubernetes API rather than Postgres/Kafka/GCS, hence the only one with a
   `serviceAccountName`).
-- `config.py`, `fixture_content.py` — stay top-level, not subpackaged: `config.py` is imported by
+- `config.py`, `fixtures/content.py` — stay top-level, not subpackaged: `config.py` is imported by
   every other module (subpackaging it would just add an import hop with no grouping benefit), and
-  `fixture_content.py` is shared fixture text, not pipeline logic.
+  `fixtures/content.py` is shared fixture text, not pipeline logic.
 - `ansible/site.yml` — the only orchestration layer (see "Ansible task ordering" below). `Makefile`
   targets are thin `ansible-playbook --tags <name>` aliases; there is no bash-script orchestration
   left (`local_scripts/reset.sh`/`init_db.sh` were deleted once Ansible fully covered them).
@@ -632,7 +632,7 @@ at all — see "Full cluster rebuild" below; it comes from the sibling repo's ow
 `litellm` Deployment, which itself proxies to **Ollama** (`llama3.2:1b` / `qwen2.5:1.5b`, CPU-only,
 $0 marginal cost) — there is no hosted-API call anywhere in this codebase.
 
-Two different defaults, deliberately: `config.py`'s own fallback is `EXTRACTION_MODE=mock` (so
+Two different defaults, deliberately: `config.py`'s own fallback is `EXTRACTION_MODE=deterministic` (so
 host-only `make e2e` stays a ~15s loop with no minikube needed), but `k8s/values.yaml`'s `config.EXTRACTION_MODE` sets
 `EXTRACTION_MODE=real` for the in-cluster Deployments — litellm is already reachable there over
 cluster DNS, so there's no reason to fake it once you're actually inside minikube.
@@ -762,6 +762,28 @@ minute cadence as `DEADMANS_SWITCH_WINDOW_SECONDS`, so consecutive checks tile
 the window they inspect. It exits non-zero on unhealthy, so the Job goes
 `Failed` and is visible to anything watching Job status.
 
+## "Deterministic" backends are production code, not test doubles
+
+`DeterministicOcrEngine` and `deterministic_extractor` were called
+`MockOcrEngine` and `mock_llm` until 2026-08-31, and the name actively misled:
+both are *runtime backends selected by config*, not test scaffolding.
+
+`k8s/values.yaml` sets `OCR_ENGINE: "deterministic"`, so the deterministic OCR
+engine is what runs in the deployed cluster on every `e2e-k8s` — Tesseract is
+the opt-in alternative. Bug #9 was a production bug *in that backend*: its text
+registry was unreachable across pods, so every OCR document in the cluster
+extracted from `"unregistered page"`. `EXTRACTION_MODE` defaults to
+`deterministic` too; the cluster overrides it to `real`.
+
+Read them the way you read fake-gcs-server or Redpanda: local stand-ins for a
+service, running for real. The distinguishing property is that they are
+reproducible without an external dependency, which is what the name now says.
+
+**The rename is backward compatible.** Both switches test for the *other* value
+(`OCR_ENGINE == "tesseract"`, `EXTRACTION_MODE == "real"`), so an older
+ConfigMap or `.env` still saying `mock` resolves to the same backend. No
+migration needed.
+
 ## Retention and growth
 
 Two tables grow without bound, and both are invisible until they aren't:
@@ -842,7 +864,7 @@ What makes it more than a delete, and what has to be decided first:
   `FIXTURE_LIMIT` discussion under "Ollama is one pod, not N"). `e2e-k8s` runs only **4**, on
   purpose, because 14 documents contending for one Ollama pod is too slow. So deleting host mode
   silently drops a 10-fixture correctness proof unless it is replaced.
-- The obvious replacement is an in-cluster *mock-mode* pass (`EXTRACTION_MODE=mock`, all 14
+- The obvious replacement is an in-cluster *mock-mode* pass (`EXTRACTION_MODE=deterministic`, all 14
   fixtures) — it never calls Ollama, so the contention argument doesn't apply and it should stay
   fast. That keeps the coverage and still makes k8s the only stack. Not implemented; flagged as
   the leading option, not a decision.

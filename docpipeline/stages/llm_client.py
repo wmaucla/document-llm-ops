@@ -3,8 +3,8 @@ mlops-llm-repo's `litellm` Deployment, already wired to Langfuse server-side
 via `success_callback: ["langfuse"]` — every request through it is
 auto-traced with no SDK calls needed for the trace itself).
 
-Raises `mock_llm.ExtractionError` with the same `kind` values the mock uses,
-so `extraction.run_funnel`'s tier loop handles the mock and real paths
+Raises `ExtractionError` with the same `kind` values the deterministic
+backend uses, so `extraction.run_funnel`'s tier loop handles both backends
 through one code path — see 'Producers cascade, exactly like model tiers'
 for why that unification matters.
 
@@ -26,7 +26,7 @@ import re
 import httpx
 
 from docpipeline import config
-from docpipeline.stages.mock_llm import ExtractionError
+from docpipeline.stages.extractor import ExtractionError
 
 log = logging.getLogger(__name__)
 
@@ -113,8 +113,8 @@ def extract(doc_id: str, tier: str, source_text: str, repair_hint: str | None = 
 def push_gate_scores(doc_id: str, gate_results: dict) -> None:
     """Attaches this document's final gate outcomes to its Langfuse trace
     (same `doc_id`, set as `metadata.trace_id` on every `extract()` call
-    above) as one Score per gate. Real mode only -- mock mode never calls
-    litellm/Langfuse, so there's no trace to attach anything to. Best-effort:
+    above) as one Score per gate. Real mode only -- the deterministic backend
+    never calls litellm/Langfuse, so there's no trace to attach anything to. Best-effort:
     a Langfuse outage must never fail extraction, so failures are logged and
     swallowed, not raised.
     """

@@ -15,7 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from docpipeline import config  # noqa: E402
 from docpipeline.core import ledger  # noqa: E402
-from docpipeline.stages import mock_llm  # noqa: E402
+from docpipeline.stages import deterministic_extractor  # noqa: E402
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -79,7 +79,7 @@ def doc_id():
 @pytest.fixture(autouse=True)
 def _clear_mock_llm():
     yield
-    mock_llm.MockLLM.clear()
+    deterministic_extractor.DeterministicExtractor.clear()
 
 
 def insert_document(cur, doc_id: str, **overrides) -> None:

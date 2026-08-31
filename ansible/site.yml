@@ -135,7 +135,7 @@
 
     - name: Clear local mock-OCR registry, fixture manifest, and per-service logs
       ansible.builtin.shell:
-        cmd: "rm -f fixtures/generated/mock_ocr_registry.json fixtures/generated/manifest.json logs/*.log"
+        cmd: "rm -f fixtures/generated/ocr_registry.json fixtures/generated/manifest.json logs/*.log"
         chdir: "{{ repo_root }}"
         executable: /bin/bash
       changed_when: true

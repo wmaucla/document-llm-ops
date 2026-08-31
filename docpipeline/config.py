@@ -88,13 +88,13 @@ GCS_TIMEOUT_SECONDS = _float("GCS_TIMEOUT_SECONDS", 30.0)
 REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6380/0")
 
 # --- OCR ---
-OCR_ENGINE = os.environ.get("OCR_ENGINE", "mock")  # mock | tesseract
+OCR_ENGINE = os.environ.get("OCR_ENGINE", "deterministic")  # deterministic | tesseract
 OCR_DPI = _int("OCR_DPI", 150)
 # Mock-OCR registry: a gs:// URI, or empty for the local file. Must be shared
 # storage wherever the fixture generator and OCR workers are different pods --
 # in k8s they are, and a local path silently degrades every OCR document to
 # "unregistered page" (AGENT.md bug #9).
-MOCK_OCR_REGISTRY_URI = os.environ.get("MOCK_OCR_REGISTRY_URI", "")
+OCR_REGISTRY_URI = os.environ.get("OCR_REGISTRY_URI", "")
 
 # --- Scaled-down limits (prod counterparts in the trailing comments) ---
 SHARD_SIZE_PAGES = _int("SHARD_SIZE_PAGES", 1)              # prod: 4
@@ -129,9 +129,9 @@ PLAUSIBLE_TOTAL_CEILING_CENTS = _int("PLAUSIBLE_TOTAL_CEILING_CENTS", 10_000_000
 
 # --- Real LLM tier, behind the sibling mlops-llm-repo's LiteLLM gateway ---
 # That gateway is Langfuse-wired server-side, so every request is auto-traced.
-# "mock" is the deterministic path; "real" swaps in llm_client. Defaults to
-# mock so host-mode runs need no cluster; k8s/values.yaml sets real in-cluster.
-EXTRACTION_MODE = os.environ.get("EXTRACTION_MODE", "mock")  # mock | real
+# "deterministic" parses the fixture text directly; "real" swaps in llm_client.
+# Defaults to deterministic so host runs need no cluster; values.yaml sets real.
+EXTRACTION_MODE = os.environ.get("EXTRACTION_MODE", "deterministic")  # deterministic | real
 LITELLM_BASE_URL = os.environ.get("LITELLM_BASE_URL", "http://localhost:4000")
 LITELLM_MASTER_KEY = os.environ.get("LITELLM_MASTER_KEY", "sk-demo-key")
 LITELLM_TIER_MODELS = {"cheap": "cheap-fast", "strong": "cheap-balanced"}

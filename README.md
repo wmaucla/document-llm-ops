@@ -41,7 +41,7 @@ stays high-level.
 ```
 docpipeline/                  the pipeline itself — see docpipeline/README.md
   config.py                     cross-cutting settings, read everywhere
-  fixture_content.py            shared invoice text blocks (fixtures + tests)
+  fixtures/content.py            shared invoice text blocks (fixtures + tests)
   core/                         ledger, outbox, gates, models, artifact — docpipeline/core/README.md
   infra/                        gcs.py, kafka_utils.py — docpipeline/infra/README.md
   text/                         pdf_utils.py, ocr_engine.py — docpipeline/text/README.md

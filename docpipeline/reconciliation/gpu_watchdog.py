@@ -192,7 +192,7 @@ def wait_healthy(timeout_seconds: int) -> bool:
 
 def run_forever() -> None:
     if not config.GPU_WATCHDOG_ENABLED:
-        # Host-mode `make e2e` runs mock extraction with no ollama at all.
+        # Host-mode `make e2e` runs deterministic extraction with no ollama at all.
         # Idle rather than crash-looping so the Deployment can stay in the
         # chart unconditionally.
         log.info("gpu_watchdog disabled (GPU_WATCHDOG_ENABLED != 1); idling")

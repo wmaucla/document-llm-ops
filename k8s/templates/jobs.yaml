@@ -62,7 +62,7 @@ spec:
 # (one_page_scan), and multi-shard split+join (three_page_scan). The 4th is
 # load-bearing: record_shard_and_maybe_join is the one place where getting the
 # SQL wrong is a real correctness bug, and at FIXTURE_LIMIT=3 it was never
-# exercised in the k8s path at all -- only in make e2e's mock host loop.
+# exercised in the k8s path at all -- only in make e2e's deterministic host loop.
 apiVersion: batch/v1
 kind: Job
 metadata:
