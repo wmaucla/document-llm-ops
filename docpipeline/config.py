@@ -58,21 +58,34 @@ KAFKA_JOIN_JITTER_SECONDS = _float("KAFKA_JOIN_JITTER_SECONDS", 0.0)
 # librdkafka group/rebalance logging, opt-in -- too noisy to leave on.
 KAFKA_CONSUMER_DEBUG = os.environ.get("KAFKA_CONSUMER_DEBUG", "") == "1"
 
+# Only topics something actually produces to or consumes from. Eight more were
+# declared here and created on every run without a single producer or consumer,
+# which is worse than useless: a reader reasonably concludes the mechanism
+# exists. Commented rather than deleted so the intent stays visible.
+#
+#   "extract.repair", "extract.escalate" -- the funnel does both in-process
+#     (see extraction_4.run_funnel's tier x repair loop), so these were left
+#     over from a design where repair was a separate message.
+#   the six ".dlq" topics -- nothing ever published to them. `dlq_replay` reads
+#     the *ledger* (state = 'failed'), not a dead-letter topic, so the name
+#     implies a routing mechanism this pipeline does not have.
+#
+# Re-enable a line the moment something genuinely writes to it.
 TOPICS = [
     "triage.requests",
     "text.embedded",
     "ocr.split",
     "ocr.shard",
     "ocr.completed",
-    "extract.repair",
-    "extract.escalate",
     "document.extracted",
-    "triage.requests.dlq",
-    "text.embedded.dlq",
-    "ocr.split.dlq",
-    "ocr.shard.dlq",
-    "ocr.completed.dlq",
-    "document.extracted.dlq",
+    # "extract.repair",
+    # "extract.escalate",
+    # "triage.requests.dlq",
+    # "text.embedded.dlq",
+    # "ocr.split.dlq",
+    # "ocr.shard.dlq",
+    # "ocr.completed.dlq",
+    # "document.extracted.dlq",
 ]
 TOPIC_PARTITIONS = _int("KAFKA_PARTITIONS", 3)
 
