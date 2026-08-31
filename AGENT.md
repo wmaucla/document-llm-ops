@@ -426,7 +426,10 @@ stack, not mocks.
 
 ## Repo layout
 
-- `docpipeline/core/` — `ledger.py` (state machine + outbox + scatter-gather join, all raw SQL),
+- `docpipeline/core/` — `ledger.py` (state machine + outbox + scatter-gather join),
+  `queries.py` (every SQL statement those two issue, as named constants — split out so the SQL reads as
+  SQL, with the correctness argument for each beside it; `tests/test_sql_safety.py` fails the build if any
+  statement is built by string formatting, or if SQL drifts back inline),
   `outbox.py` (polling relay: `SELECT ... FOR UPDATE SKIP LOCKED` batch, publish, mark posted),
   `gates.py` (five deterministic quality gates — see below), `models.py`, `artifact.py` (GCS
   read/write helpers for OCR page text and shard output).

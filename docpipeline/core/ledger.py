@@ -15,6 +15,7 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Json
 
 from docpipeline import config
+from docpipeline.core import queries
 
 IN_FLIGHT_STATES = ("text_pending", "text_running", "extract_pending", "extract_running")
 # Split because the two stages have wildly different legitimate durations and
@@ -77,17 +78,7 @@ def transition(cur, doc_id: str, to_state: str, *, from_states: set[str] | None 
     if from_states is None:
         from_states = {frm for (frm, to) in ALLOWED_TRANSITIONS if to == to_state}
     allowed = set(from_states) | ({to_state} if idempotent else set())
-    # arch diagram: "Postgres ledger" — every state move in the system is this
-    # one guarded statement.
-    cur.execute(
-        """
-        UPDATE documents
-           SET state = %(to)s, state_updated_at = now()
-         WHERE doc_id = %(doc_id)s AND state = ANY(%(allowed)s)
-        RETURNING state
-        """,
-        {"to": to_state, "doc_id": doc_id, "allowed": list(allowed)},
-    )
+    cur.execute(queries.TRANSITION, {"to": to_state, "doc_id": doc_id, "allowed": list(allowed)})
     row = cur.fetchone()
     if row is None:
         raise IllegalTransition(doc_id, to_state, from_states)
@@ -95,11 +86,7 @@ def transition(cur, doc_id: str, to_state: str, *, from_states: set[str] | None 
 
 
 def enqueue(cur, doc_id: str, topic: str, payload: dict, headers: dict | None = None) -> None:
-    cur.execute(
-        # arch diagram: "Outbox → sink" — written in the caller's transaction.
-        "INSERT INTO outbox (doc_id, topic, payload, headers) VALUES (%s, %s, %s, %s)",
-        (doc_id, topic, Json(payload), Json(headers) if headers else None),
-    )
+    cur.execute(queries.ENQUEUE, (doc_id, topic, Json(payload), Json(headers) if headers else None))
 
 
 def enqueue_many(cur, rows: list[tuple[str, str, dict]]) -> None:
@@ -107,11 +94,8 @@ def enqueue_many(cur, rows: list[tuple[str, str, dict]]) -> None:
     transactions' in the outbox cost table."""
     if not rows:
         return
-    cur.executemany(
-        # arch diagram: "Outbox → sink" — the fan-out case (N shard messages).
-        "INSERT INTO outbox (doc_id, topic, payload) VALUES (%s, %s, %s)",
-        [(doc_id, topic, Json(payload)) for doc_id, topic, payload in rows],
-    )
+    cur.executemany(queries.ENQUEUE_MANY,
+                    [(doc_id, topic, Json(payload)) for doc_id, topic, payload in rows])
 
 
 def route_text_production(has_text_layer: bool, page_count: int) -> tuple[str, int]:
@@ -160,14 +144,7 @@ def insert_initial_document(
     """Triage is the only writer of the initial row (see '1 · State
     machine'). Returns False if the row already exists (checksum dedupe)."""
     cur.execute(
-        """
-        -- arch diagram: "Triage" creating the row in "Postgres ledger"
-        INSERT INTO documents (doc_id, gcs_path, state, page_count, has_text_layer,
-                                priority, shards_total, last_error, doc_type)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-        ON CONFLICT (doc_id) DO NOTHING
-        RETURNING doc_id
-        """,
+        queries.INSERT_INITIAL_DOCUMENT,
         (doc_id, gcs_path, state, page_count, has_text_layer, priority, shards_total, last_error, doc_type),
     )
     return cur.fetchone() is not None
@@ -177,29 +154,11 @@ def record_shard_and_maybe_join(cur, doc_id: str, shard_idx: int, completed_payl
     """The scatter-gather join. Returns True iff *this* caller is the winner
     (fires ocr.completed). Uses UPDATE ... RETURNING under the parent row
     lock, never SELECT count(*) — see 'Detecting completion'."""
-    cur.execute(
-        """
-        -- arch diagram: "Scatter-gather join", step 1 of 2 — claim this shard
-        INSERT INTO document_shards (doc_id, shard_idx)
-        VALUES (%s, %s)
-        ON CONFLICT (doc_id, shard_idx) DO NOTHING
-        RETURNING shard_idx
-        """,
-        (doc_id, shard_idx),
-    )
+    cur.execute(queries.CLAIM_SHARD, (doc_id, shard_idx))
     if cur.fetchone() is None:
         return False  # duplicate delivery; unique index makes this a no-op
 
-    cur.execute(
-        """
-        -- arch diagram: "Scatter-gather join", step 2 of 2 — increment and
-        -- compare under one row lock; whoever reads done == total has won
-        UPDATE documents SET shards_done = shards_done + 1
-         WHERE doc_id = %s
-        RETURNING shards_done, shards_total
-        """,
-        (doc_id,),
-    )
+    cur.execute(queries.INCREMENT_SHARDS_DONE, (doc_id,))
     row = cur.fetchone()
     won = row["shards_done"] == row["shards_total"]
     if won:
@@ -209,7 +168,7 @@ def record_shard_and_maybe_join(cur, doc_id: str, shard_idx: int, completed_payl
 
 
 def missing_shards(cur, doc_id: str, shards_total: int) -> list[int]:
-    cur.execute("SELECT shard_idx FROM document_shards WHERE doc_id = %s", (doc_id,))
+    cur.execute(queries.SELECT_SHARD_INDEXES, (doc_id,))
     present = {r["shard_idx"] for r in cur.fetchall()}
     return [i for i in range(shards_total) if i not in present]
 
@@ -224,16 +183,8 @@ def commit_extraction_result(
 ) -> bool:
     """First-writer-wins (see '4 · Retry divergence'). Returns True iff this
     attempt's result was the one persisted."""
-    cur.execute(
-        """
-        UPDATE documents
-           -- arch diagram: the write after "5 quality gates" — first writer wins
-           SET extraction_result = %s, gate_results = %s, state = %s, state_updated_at = now()
-         WHERE doc_id = %s AND extraction_result IS NULL
-        RETURNING doc_id
-        """,
-        (Json(extraction_result), Json(gate_results), final_state, doc_id),
-    )
+    cur.execute(queries.COMMIT_EXTRACTION_RESULT,
+                (Json(extraction_result), Json(gate_results), final_state, doc_id))
     won = cur.fetchone() is not None
     if won and outbox_payload is not None:
         enqueue(cur, doc_id, "document.extracted", outbox_payload)
@@ -244,16 +195,7 @@ def route_without_writing(cur, doc_id: str, gate_results: dict, final_state: str
     """For non-terminal routes that don't carry an extraction_result yet
     (e.g. completeness gate failure -> review before extraction ever ran).
     Does not touch the first-writer-wins guard."""
-    cur.execute(
-        """
-        UPDATE documents
-           -- arch diagram: "5 quality gates" routing to the review pill
-           SET gate_results = %s, state = %s, state_updated_at = now()
-         WHERE doc_id = %s
-        RETURNING doc_id
-        """,
-        (Json(gate_results), final_state, doc_id),
-    )
+    cur.execute(queries.ROUTE_WITHOUT_WRITING, (Json(gate_results), final_state, doc_id))
     return cur.fetchone() is not None
 
 
@@ -271,11 +213,7 @@ def log_attempt(
     ended_at: datetime.datetime | None = None,
 ) -> None:
     cur.execute(
-        """
-        INSERT INTO attempt_log (doc_id, stage, attempt_no, producer_or_model, outcome,
-                                  error_class, error_msg, started_at, ended_at)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-        """,
+        queries.LOG_ATTEMPT,
         (doc_id, stage, attempt_no, producer_or_model, outcome, error_class, error_msg, started_at, ended_at),
     )
 
@@ -292,7 +230,7 @@ def increment_attempts(cur, doc_id: str, column: str) -> int:
     if column not in _ATTEMPT_COLUMNS:
         raise ValueError(f"not an attempt column: {column!r}")
     cur.execute(
-        f"UPDATE documents SET {column} = {column} + 1 WHERE doc_id = %s RETURNING {column}",
+        queries.INCREMENT_ATTEMPTS_TEMPLATE.format(column=column),  # noqa: S608 — allowlisted identifier
         (doc_id,),
     )
     return cur.fetchone()[column]
@@ -307,7 +245,7 @@ def set_last_error(cur, doc_id: str, message: str) -> None:
     up repeatedly in debugging evidence trails explaining nothing, and was once
     mistaken for a signal about *how* the document died.
     """
-    cur.execute("UPDATE documents SET last_error = %s WHERE doc_id = %s", (message, doc_id))
+    cur.execute(queries.SET_LAST_ERROR, (message, doc_id))
 
 
 def set_gate_results(cur, doc_id: str, gate_results: dict) -> None:
@@ -315,40 +253,33 @@ def set_gate_results(cur, doc_id: str, gate_results: dict) -> None:
     Used by operator.accept_review to stamp an override onto a document whose
     extraction already ran — the normal write path (record_extraction) sets all
     three together, which is wrong here since nothing re-extracted."""
-    cur.execute("UPDATE documents SET gate_results = %s WHERE doc_id = %s", (Json(gate_results), doc_id))
+    cur.execute(queries.SET_GATE_RESULTS, (Json(gate_results), doc_id))
 
 
 def reset_repair_attempts(cur, doc_id: str) -> None:
     """repair_attempts is an inner-loop counter that must reset on each new
     extract_attempt — see '2 · Attempt accounting'."""
-    cur.execute("UPDATE documents SET repair_attempts = 0 WHERE doc_id = %s", (doc_id,))
+    cur.execute(queries.RESET_REPAIR_ATTEMPTS, (doc_id,))
 
 
 def stamp_build_info(cur, doc_id: str, build_sha: str, prompt_version: str) -> None:
     """Records what code/prompt last touched a document — this is what gates
     DLQ replay (see 'DLQ replay — daily, gated, never fully automatic')."""
-    cur.execute(
-        "UPDATE documents SET build_sha = %s, prompt_version = %s WHERE doc_id = %s",
-        (build_sha, prompt_version, doc_id),
-    )
+    cur.execute(queries.STAMP_BUILD_INFO, (build_sha, prompt_version, doc_id))
 
 
 def get_feature_flag(cur, key: str, default: bool = True) -> bool:
     """The auto-post kill switch, and any future flag — a table row instead
     of a LaunchDarkly SDK call, so it can be flipped without a redeploy."""
-    cur.execute("SELECT value FROM feature_flags WHERE key = %s", (key,))
+    cur.execute(queries.GET_FEATURE_FLAG, (key,))
     row = cur.fetchone()
     return row["value"] if row is not None else default
 
 
 def set_feature_flag(cur, key: str, value: bool) -> None:
-    cur.execute(
-        "INSERT INTO feature_flags (key, value) VALUES (%s, %s) "
-        "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
-        (key, value),
-    )
+    cur.execute(queries.SET_FEATURE_FLAG, (key, value))
 
 
 def get_document(cur, doc_id: str) -> dict | None:
-    cur.execute("SELECT * FROM documents WHERE doc_id = %s", (doc_id,))
+    cur.execute(queries.GET_DOCUMENT, (doc_id,))
     return cur.fetchone()

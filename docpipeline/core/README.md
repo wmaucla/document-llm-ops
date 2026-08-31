@@ -6,6 +6,7 @@ behind the design; this file is just what's here.
 
 | File | What it is |
 |---|---|
+| `queries.py` | Every SQL statement the ledger and outbox issue, as named constants. Split out so the SQL reads as SQL — and because here the statements *are* the design (row locks, `ON CONFLICT`, `SKIP LOCKED`, `RETURNING`), the reasoning that makes each one correct lives beside it rather than in the caller. `tests/test_sql_safety.py` enforces that nothing here is built by formatting and that no SQL drifts back inline |
 | `ledger.py` | The document ledger — state machine (`transition()`, `ALLOWED_TRANSITIONS`), the scatter-gather join (`record_shard_and_maybe_join()`), first-writer-wins commit (`commit_extraction_result()`), feature flags |
 | `outbox.py` | The transactional outbox + the polling relay (`SELECT ... FOR UPDATE SKIP LOCKED`, publish, mark posted) |
 | `gates.py` | The five deterministic quality gates: `grounding`, `arithmetic`, `iban_mod97`, `plausibility`, `business_dedupe` |

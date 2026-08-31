@@ -13,7 +13,7 @@ import logging
 import time
 
 from docpipeline import config
-from docpipeline.core import ledger
+from docpipeline.core import ledger, queries
 from docpipeline.infra import kafka_utils
 
 log = logging.getLogger(__name__)
@@ -28,15 +28,7 @@ def relay_once(conn, producer, batch_cap: int = config.RELAY_BATCH_CAP) -> int:
         # No `published_at IS NULL` filter: a row's *existence* is its pending
         # state now (see the delete-on-ack note below), so every row here is
         # unpublished by construction.
-        cur.execute(
-            """
-            SELECT id, doc_id, topic, payload, headers FROM outbox
-             ORDER BY id
-             LIMIT %s
-             FOR UPDATE SKIP LOCKED
-            """,
-            (batch_cap,),
-        )
+        cur.execute(queries.CLAIM_OUTBOX_BATCH, (batch_cap,))
         rows = cur.fetchall()
         if not rows:
             conn.commit()
@@ -92,7 +84,7 @@ def relay_once(conn, producer, batch_cap: int = config.RELAY_BATCH_CAP) -> int:
         # broker failure still rolls back and the rows stay queued.
         ids = [r["id"] for r in rows]
         # arch diagram: "Outbox → sink" — the relay's half, after the ack
-        cur.execute("DELETE FROM outbox WHERE id = ANY(%s)", (ids,))
+        cur.execute(queries.DELETE_PUBLISHED, (ids,))
         conn.commit()
     return len(rows)
 
@@ -102,7 +94,7 @@ def oldest_pending_age_seconds(conn) -> float | None:
     A dead relay stalls the whole pipeline while every other dashboard stays green."""
     with conn.cursor() as cur:
         cur.execute(
-            "SELECT extract(epoch from (now() - min(created_at))) AS age FROM outbox"
+            queries.OLDEST_PENDING_AGE
         )
         row = cur.fetchone()
         return row["age"] if row and row["age"] is not None else None
