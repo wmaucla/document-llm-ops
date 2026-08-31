@@ -108,6 +108,13 @@ RELAY_BATCH_CAP = _int("RELAY_BATCH_CAP", 50)
 # marking posted. Bounds how long one tick blocks everything behind it.
 RELAY_FLUSH_TIMEOUT_SECONDS = _float("RELAY_FLUSH_TIMEOUT_SECONDS", 10.0)
 ORPHAN_DETECTOR_INTERVAL_SECONDS = _int("ORPHAN_DETECTOR_INTERVAL_SECONDS", 10)
+# Retention for the two unbounded tables (docpipeline.reconciliation.prune).
+# outbox is a queue, not a record -- a published row duplicates what is already
+# in documents/posted_documents/attempt_log, so 7 days is generous headroom for
+# debugging a delivery, not a data-retention decision. attempt_log is genuine
+# diagnostic history, hence longer.
+OUTBOX_RETENTION_DAYS = _int("OUTBOX_RETENTION_DAYS", 7)
+ATTEMPT_LOG_RETENTION_DAYS = _int("ATTEMPT_LOG_RETENTION_DAYS", 30)
 MAX_TEXT_ATTEMPTS = _int("MAX_TEXT_ATTEMPTS", 5)
 MAX_EXTRACT_ATTEMPTS = _int("MAX_EXTRACT_ATTEMPTS", 5)
 MAX_REPAIR_ATTEMPTS = _int("MAX_REPAIR_ATTEMPTS", 2)

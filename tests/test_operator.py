@@ -129,3 +129,50 @@ def test_replay_never_triggers_assembly_as_a_side_effect(conn, doc_id):
 
     results = operator.replay_documents([doc_id])
     assert results == [{"doc_id": doc_id, "path": "replay", "error": "not_yet_assembled"}]
+
+
+def test_accept_review_requires_a_reason(conn, doc_id):
+    with conn.cursor() as cur:
+        _to_review(cur, doc_id)
+    conn.commit()
+
+    with pytest.raises(operator.BreakGlassError):
+        operator.accept_review(doc_id, "", "wmaucla")
+
+
+def test_accept_review_marks_complete_and_records_the_override(conn, doc_id):
+    """The only path from review to complete. It must leave evidence: a
+    `complete` document has to say whether it earned that or was granted it."""
+    with conn.cursor() as cur:
+        _to_review(cur, doc_id)
+    conn.commit()
+
+    result = operator.accept_review(doc_id, "totals verified by hand", "wmaucla", conn=conn)
+    assert result["state"] == "complete"
+
+    with conn.cursor() as cur:
+        doc = ledger.get_document(cur, doc_id)
+        cur.execute("SELECT action, reason FROM break_glass_audit WHERE doc_id = %s", (doc_id,))
+        audit = cur.fetchone()
+        cur.execute("SELECT topic FROM outbox WHERE doc_id = %s ORDER BY id DESC LIMIT 1", (doc_id,))
+        outbox_row = cur.fetchone()
+
+    assert doc["state"] == "complete"
+    override = (doc["gate_results"] or {}).get("operator_override")
+    assert override is not None, "an override must be distinguishable from a genuine gate pass"
+    assert override["detail"]["actor"] == "wmaucla"
+    assert audit["action"] == "accept_review"
+    # It must actually post, or `complete` diverges from posted_documents.
+    assert outbox_row["topic"] == "document.extracted"
+
+
+def test_accept_review_refuses_anything_not_in_review(conn, doc_id):
+    """Guards the narrow meaning of this lane: it overrides a *gate* decision.
+    A failed document has a different problem and a different remedy."""
+    with conn.cursor() as cur:
+        _to_review(cur, doc_id)
+        ledger.transition(cur, doc_id, "extract_pending")
+    conn.commit()
+
+    with pytest.raises(operator.BreakGlassError, match="not 'review'"):
+        operator.accept_review(doc_id, "should not work", "wmaucla", conn=conn)

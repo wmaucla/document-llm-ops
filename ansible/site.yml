@@ -516,6 +516,18 @@
         msg: "{{ failed_report_result.stdout_lines | default(['(no output)']) }}"
       tags: [failed-report]
 
+    - name: Prune published outbox rows and old attempt_log history
+      ansible.builtin.command:
+        cmd: "kubectl exec deploy/docpipeline-triage -- python -m docpipeline.reconciliation.prune"
+      register: prune_result
+      changed_when: false
+      tags: [prune]
+
+    - name: Show the prune result
+      ansible.builtin.debug:
+        msg: "{{ prune_result.stdout_lines | default(['(no output)']) }}"
+      tags: [prune]
+
     - name: Check for total silence (dead man's switch)
       ansible.builtin.command:
         cmd: "kubectl exec deploy/docpipeline-triage -- python -m docpipeline.reconciliation.deadmans_switch"

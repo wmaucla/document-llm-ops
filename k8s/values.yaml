@@ -196,6 +196,13 @@ cronJobs:
     schedule: "0 6 * * *"
     command: ["python", "-m", "docpipeline.reconciliation.failed_report"]
 
+  # Retention. outbox and attempt_log grow without bound and nothing else
+  # deletes from them; the partial indexes mean queries stay fast regardless,
+  # so this is invisible until disk fills. Placeholder schedule, off-peak.
+  - name: prune
+    schedule: "30 3 * * *"
+    command: ["python", "-m", "docpipeline.reconciliation.prune"]
+
 keda:
   kafkaBootstrapServers: "redpanda.default.svc.cluster.local:9092"
   scaledObjects:

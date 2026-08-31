@@ -103,6 +103,59 @@ def force_redrive(doc_id: str, reason: str, actor: str, conn=None) -> dict:
             conn.close()
 
 
+def accept_review(doc_id: str, reason: str, actor: str, conn=None) -> dict:
+    """'Accept a document the gates rejected' — the human-judgement override.
+
+    This is the ONLY path from `review` to `complete`, and the only edge into
+    `complete` that does not mean "a worker ran and the blocking gates passed".
+    It exists because a person who reviews a document and finds the extraction
+    correct previously had nowhere to record that: re-driving it would just fail
+    the same gates again, so the document sat in `review` forever.
+
+    Two deliberate constraints. It stamps `gate_results.operator_override`, so a
+    `complete` document always states whether it earned that or was granted it —
+    without this, an override is indistinguishable downstream from a genuine
+    pass, and `complete` quietly stops meaning what it says. And it enqueues
+    `document.extracted` exactly as the normal path does, so an accepted
+    document really does post: an override that silently withheld the side
+    effect would leave `complete` documents that never reach
+    `posted_documents`, which is the kind of quiet divergence this pipeline
+    exists to avoid.
+    """
+    _require_reason(reason)
+    owns_conn = conn is None
+    conn = conn or ledger.connect(role="rw")
+    try:
+        with conn.cursor() as cur:
+            row = ledger.get_document(cur, doc_id)
+            if row is None:
+                raise BreakGlassError(f"no such document: {doc_id}")
+            if row["state"] != "review":
+                raise BreakGlassError(
+                    f"{doc_id} is in {row['state']!r}, not 'review' — accept_review only "
+                    "overrides a gate decision. Use force_redrive for anything else."
+                )
+
+            gate_results = dict(row["gate_results"] or {})
+            gate_results["operator_override"] = {
+                "outcome": "accepted",
+                "detail": {"actor": actor, "reason": reason, "was": "review"},
+            }
+            ledger.set_gate_results(cur, doc_id, gate_results)
+            ledger.transition(cur, doc_id, "complete", from_states={"review"})
+            ledger.enqueue(cur, doc_id, "document.extracted",
+                           {"doc_id": doc_id, "operator_override": True})
+            _audit(cur, doc_id=doc_id, action="accept_review", reason=reason, actor=actor,
+                   detail={"from_state": "review", "to_state": "complete"})
+        conn.commit()
+        log.warning("break-glass accept_review doc=%s -> complete (actor=%s, reason=%s)",
+                    doc_id, actor, reason)
+        return {"doc_id": doc_id, "state": "complete", "operator_override": True}
+    finally:
+        if owns_conn:
+            conn.close()
+
+
 def bulk_redrive(predicate_sql: str, reason: str, actor: str, *,
                   cap: int = config.BREAK_GLASS_BLAST_RADIUS_CAP, approved: bool = False) -> dict:
     """'Bulk re-drive after a fix'. `predicate_sql` is a raw SQL WHERE clause

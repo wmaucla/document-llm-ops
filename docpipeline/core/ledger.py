@@ -44,6 +44,14 @@ ALLOWED_TRANSITIONS: set[tuple[str, str]] = {
     ("review", "extract_pending"),
     ("failed", "text_pending"),
     ("failed", "extract_pending"),
+    # Human override only — operator.accept_review(), never a consumer. Every
+    # other edge into `complete` means "a worker ran and the blocking gates
+    # passed"; this one means "a person looked and disagreed with the gates",
+    # which is a weaker claim. It is deliberately unreachable from pipeline
+    # code: nothing in stages/ may transition to `complete` from `review`, and
+    # accept_review stamps gate_results.operator_override so a `complete`
+    # document always says whether it earned that or was granted it.
+    ("review", "complete"),
 }
 
 
@@ -291,6 +299,14 @@ def set_last_error(cur, doc_id: str, message: str) -> None:
     mistaken for a signal about *how* the document died.
     """
     cur.execute("UPDATE documents SET last_error = %s WHERE doc_id = %s", (message, doc_id))
+
+
+def set_gate_results(cur, doc_id: str, gate_results: dict) -> None:
+    """Overwrite gate_results without touching state or extraction_result.
+    Used by operator.accept_review to stamp an override onto a document whose
+    extraction already ran — the normal write path (record_extraction) sets all
+    three together, which is wrong here since nothing re-extracted."""
+    cur.execute("UPDATE documents SET gate_results = %s WHERE doc_id = %s", (Json(gate_results), doc_id))
 
 
 def reset_repair_attempts(cur, doc_id: str) -> None:

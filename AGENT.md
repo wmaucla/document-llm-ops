@@ -455,6 +455,7 @@ stack, not mocks.
   `canary.py`, `failed_report.py` (scheduled summary of what is sitting in `failed` — that
   state is terminal in practice, so its population grows silently; run by the
   `docpipeline-failed-report` CronJob, `k8s/templates/cronjobs.yaml`),
+  `prune.py` (retention for `outbox`/`attempt_log`, the two tables nothing else deletes from),
   `operator.py` (read-only + break-glass lanes — see "The two operator lanes" below),
   `gpu_watchdog.py` (keeps ollama's models pinned in VRAM and restarts the ollama pod when it has
   silently fallen back to CPU — see "Known open bugs" #2; the only module in this repo that talks
@@ -731,6 +732,49 @@ getting this working:
   port-forward at all). It resolves `argocd-cm` from the *current kubectl context's namespace*, so
   `site.yml` switches the context to `argocd` before `--core` calls and back to `default`
   immediately after — nothing else in the play may assume `argocd` is the ambient namespace.
+
+## Retention and growth
+
+Two tables grow without bound, and both are invisible until they aren't:
+`outbox` and `attempt_log`. Nothing deleted from either until 2026-08-31.
+
+**Why it stays hidden.** Both hot paths use partial indexes —
+`outbox_pending_idx` covers only `published_at IS NULL`, and the sweeper's
+`documents_inflight_idx` only the four in-flight states — so index size tracks
+*concurrency*, not history, and query latency never degrades as the heap grows.
+The symptom is disk exhaustion or autovacuum falling behind, not slow queries.
+At ~20k docs/day that is roughly 7M `documents` rows a year (fine) against tens
+of millions of `outbox` and `attempt_log` rows (not).
+
+`docpipeline/reconciliation/prune.py` handles it, on a nightly CronJob. Two
+properties in it are load-bearing:
+
+- **The outbox predicate is on `published_at`, never `created_at`.** An
+  unpublished row can be arbitrarily old — broker down, delivery failing — and
+  deleting one destroys an undelivered message, exactly the loss the outbox
+  exists to prevent, reintroduced by its own cleanup. `tests/test_prune.py`
+  asserts a 999-day-old *pending* row survives a 1-day retention window.
+- **Batched with a commit between batches.** One DELETE over tens of millions
+  of rows is a single enormous transaction that holds a lock and blocks
+  autovacuum for its duration — causing the bloat it was meant to prevent.
+
+`attempt_log` is pruned by **id watermark**, not timestamp: `started_at`/
+`ended_at` are both optional there, so a time predicate would skip undated rows
+forever. `id` is bigserial and therefore monotonic in insert order, so a
+watermark taken from the newest datable old row also sweeps the undated rows
+interleaved among them.
+
+**The better answer at real volume is partitioning, not deletion.** Partition
+by time and `DROP TABLE` the old partition: O(1), no WAL churn, no dead tuples,
+versus a DELETE treadmill you run forever. That is a schema migration rather
+than a job and is deliberately not done here. If you add it, the one guard it
+needs is: never drop a partition containing `published_at IS NULL` rows.
+
+**Not worth archiving.** A published outbox row duplicates what is already
+durable — `documents.extraction_result`, `posted_documents`, `attempt_log`, and
+the GCS artifacts. The outbox is a queue, not a record. If a compliance
+requirement ever appears, the thing worth retaining is the posted *events*, not
+the queue mechanics that carried them.
 
 ## Connection-leak discipline
 

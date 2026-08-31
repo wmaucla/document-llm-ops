@@ -10,7 +10,7 @@ COUNT ?= 3
 
 .PHONY: help install up down init-db topics fixtures reset run-local test test-real-llm \
         cluster-rebuild image keda-install deploy undeploy k8s-status canary dlq-replay \
-        deadmans-switch failed-report summary summary-k8s replay-docs e2e e2e-k8s verify-loop
+        deadmans-switch failed-report prune summary summary-k8s replay-docs e2e e2e-k8s verify-loop
 
 help:
 	@echo "make install       uv sync the project (no manual venv — uv run handles the rest)"
@@ -35,6 +35,7 @@ help:
 	@echo "make dlq-replay    re-drive failed docs whose build_sha/prompt_version changed"
 	@echo "make deadmans-switch  check for total silence (exits 1 if unhealthy)"
 	@echo "make failed-report ad-hoc run of the failed-state summary the daily CronJob runs"
+	@echo "make prune         ad-hoc retention pass (outbox + attempt_log); --dry-run in the module"
 	@echo "make summary       per-document state report against the HOST (docker-compose) Postgres"
 	@echo "make summary-k8s   the in-cluster equivalent -- checks the k8s cluster's own Postgres,"
 	@echo "                   not the host one. Standalone, safe to run any time."
@@ -114,6 +115,10 @@ deadmans-switch:
 # (k8s/templates/cronjobs.yaml); this is the on-demand version.
 failed-report:
 	$(ANSIBLE) --tags failed-report
+
+# Same retention pass the docpipeline-prune CronJob runs nightly.
+prune:
+	$(ANSIBLE) --tags prune
 
 summary:
 	$(ANSIBLE) --tags summary
