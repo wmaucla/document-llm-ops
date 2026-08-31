@@ -6,10 +6,11 @@
 #                  destroys + rebuilds the whole cluster (steps 8-9)
 
 ANSIBLE := ansible-playbook -i ansible/inventory.ini ansible/site.yml
+COUNT ?= 3
 
 .PHONY: help install up down init-db topics fixtures reset run-local test test-real-llm \
         cluster-rebuild image keda-install deploy redeploy undeploy k8s-status canary dlq-replay \
-        deadmans-switch summary e2e e2e-k8s
+        deadmans-switch summary summary-k8s replay-docs e2e e2e-k8s verify-loop
 
 help:
 	@echo "make install       uv sync the project (no manual venv — uv run handles the rest)"
@@ -33,10 +34,19 @@ help:
 	@echo "make canary        inject + track one synthetic document end to end"
 	@echo "make dlq-replay    re-drive failed docs whose build_sha/prompt_version changed"
 	@echo "make deadmans-switch  check for total silence (exits 1 if unhealthy)"
+	@echo "make summary-k8s   the in-cluster equivalent of 'make summary' -- checks the k8s cluster's"
+	@echo "                   own Postgres, not the host one. Standalone, safe to run any time."
+	@echo "make replay-docs   inject COUNT (default 3) fresh docs into an already-running cluster,"
+	@echo "                   no redeploy -- make replay-docs COUNT=10 to override"
 	@echo "make e2e           fast end-to-end run: reset -> fixtures -> host consumers -> test"
 	@echo "make e2e-k8s       full end-to-end run: DESTROYS + rebuilds the whole minikube cluster,"
 	@echo "                   then image -> ArgoCD deploy (in-cluster infra, migrate/topics/fixtures"
 	@echo "                   Jobs, app tier, KEDA, monitoring, all one sync) -> canary (~15-20 min)"
+	@echo "make verify-loop   the human verification loop: e2e-k8s -> summary-k8s -> replay-docs ->"
+	@echo "                   summary-k8s again, proving the cluster keeps taking new work after the"
+	@echo "                   initial deploy, not just once -- then dlq-replay + dead man's switch,"
+	@echo "                   the two reconciliation lanes nothing else covers live."
+	@echo "                   COUNT=N to replay more than 3."
 
 install:
 	uv sync --extra dev
@@ -101,6 +111,21 @@ deadmans-switch:
 summary:
 	$(ANSIBLE) --tags summary
 
+# In-cluster equivalent of `make summary` — checks the k8s cluster's own
+# Postgres via kubectl exec, not the host docker-compose one `make summary`
+# points at (the two share no infrastructure). Standalone, safe to run
+# any time after `make e2e-k8s` or `make replay-docs`.
+summary-k8s:
+	$(ANSIBLE) --tags summary-k8s
+
+# Assumes the cluster from a prior e2e-k8s is already up -- doesn't deploy or
+# rebuild anything, just injects COUNT fresh synthetic documents and returns.
+# Each gets a unique invoice_no/upload path (same trick canary.py uses), so
+# re-running this never dedupes into a no-op the way literally re-uploading
+# the same fixture bytes would (doc_id is a content checksum).
+replay-docs:
+	$(ANSIBLE) --tags replay -e replay_count=$(COUNT)
+
 e2e:
 	$(ANSIBLE) --tags reset,e2e
 
@@ -111,3 +136,24 @@ e2e:
 # run — a stronger reset than truncate/flush ever was.
 e2e-k8s:
 	$(ANSIBLE) --tags cluster-rebuild,image,keda-install,deploy,e2e-k8s
+
+# The "human verification loop": e2e-k8s (full rebuild) -> summary-k8s
+# (confirm it settled) -> replay-docs (inject fresh work against the now-
+# running cluster, no redeploy) -> wait -> summary-k8s again. The point of
+# the middle steps isn't just firing replay-docs -- it's proving the replayed
+# documents actually reach a terminal state too, i.e. that the cluster keeps
+# taking new work after the initial deploy, not just once.
+#
+# verify-extras runs last: dlq-replay and the dead man's switch are the only
+# reconciliation lanes with no other live coverage (everything else is
+# exercised by the e2e path itself, and these two were pytest-only until
+# 2026-08-31). The switch must run *after* the drain -- it fails on total
+# silence, so on an idle cluster it would report unhealthy correctly but
+# uselessly. make verify-loop COUNT=10 to replay more than the default 3.
+verify-loop:
+	$(ANSIBLE) --tags cluster-rebuild,image,keda-install,deploy,e2e-k8s
+	$(ANSIBLE) --tags summary-k8s
+	$(ANSIBLE) --tags replay -e replay_count=$(COUNT)
+	$(ANSIBLE) --tags replay-wait
+	$(ANSIBLE) --tags summary-k8s
+	$(ANSIBLE) --tags verify-extras
