@@ -733,6 +733,30 @@ getting this working:
   `site.yml` switches the context to `argocd` before `--core` calls and back to `default`
   immediately after — nothing else in the play may assume `argocd` is the ambient namespace.
 
+## The reconciliation tier runs three different ways
+
+Conceptually one tier, three execution models — worth knowing which is which
+before adding to it:
+
+| lane | how | why |
+|---|---|---|
+| `sweeper`, `orphan_detector_0`, `gpu_watchdog` | **Deployment**, own `while True` + sleep | need sub-minute cadence (10-30s), below what a CronJob can express |
+| `terminal_report`, `prune`, `deadmans_switch` | **CronJob** (`k8s/templates/cronjobs.yaml`) | daily/periodic; a permanently-running pod would just be a pod that sleeps |
+| `dlq_replay`, `canary` | **one-shot**, no workload object | invoked deliberately — `make dlq-replay` is "after a deploy, retry what the old version failed", and the canary is an e2e step |
+
+**None of them consume a Kafka topic** — zero `make_consumer` calls across the
+whole tier. The numbered `stages/` are message-driven; reconciliation is
+poll-based against Postgres, GCS or the Kubernetes API. That is deliberate: the
+bus is one of the things this tier exists to recover from, so a sweeper that
+needed Kafka to run could not fix a Kafka-caused stall.
+
+`deadmans_switch` was one-shot until 2026-08-31, reachable only by a human
+typing `make deadmans-switch` — which defeats its purpose, since it exists to
+catch the case where nobody is looking. It is now a CronJob at the same 15
+minute cadence as `DEADMANS_SWITCH_WINDOW_SECONDS`, so consecutive checks tile
+the window they inspect. It exits non-zero on unhealthy, so the Job goes
+`Failed` and is visible to anything watching Job status.
+
 ## Retention and growth
 
 Two tables grow without bound, and both are invisible until they aren't:

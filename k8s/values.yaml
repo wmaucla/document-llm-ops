@@ -197,12 +197,23 @@ cronJobs:
     schedule: "0 6 * * *"
     command: ["python", "-m", "docpipeline.reconciliation.terminal_report"]
 
-  # Retention. outbox and attempt_log grow without bound and nothing else
-  # deletes from them; the partial indexes mean queries stay fast regardless,
-  # so this is invisible until disk fills. Placeholder schedule, off-peak.
+  # Retention for attempt_log. (outbox needs none — the relay deletes on
+  # delivery ack, so that table is bounded by the backlog.) Placeholder
+  # schedule, off-peak.
   - name: prune
     schedule: "30 3 * * *"
     command: ["python", "-m", "docpipeline.reconciliation.prune"]
+
+  # The dead man's switch was previously reachable only by a human typing
+  # `make deadmans-switch`, which defeats the point: it exists to catch total
+  # silence — the situation where nobody is looking. Every 15 minutes, matching
+  # DEADMANS_SWITCH_WINDOW_SECONDS, so consecutive checks tile the window they
+  # inspect. It exits non-zero when unhealthy, so the Job goes Failed and
+  # surfaces in `kubectl get jobs` and anything watching Job status; with
+  # backoffLimit 0 that failure stays visible instead of being retried away.
+  - name: deadmans-switch
+    schedule: "*/15 * * * *"
+    command: ["python", "-m", "docpipeline.reconciliation.deadmans_switch"]
 
 keda:
   kafkaBootstrapServers: "redpanda.default.svc.cluster.local:9092"
