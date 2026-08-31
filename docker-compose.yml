@@ -1,6 +1,6 @@
 services:
   # host-mode `make e2e` only — `make e2e-k8s` runs its own in-cluster
-  # Postgres/Redis/Redpanda/fake-gcs-server instead (see
+  # Postgres/Redpanda/fake-gcs-server instead (see
   # k8s/templates/infra.yaml), so this file no longer needs a listener for
   # minikube pods to reach in on.
   redpanda:
@@ -50,10 +50,6 @@ services:
     ports:
       - "4443:4443"
 
-  redis:
-    image: redis:7-alpine
-    ports:
-      - "6380:6379"  # 6379 is already bound by a pre-existing local redis
 
 volumes:
   pgdata:

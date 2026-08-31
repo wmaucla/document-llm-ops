@@ -14,10 +14,10 @@ COUNT ?= 3
 
 help:
 	@echo "make install       uv sync the project (no manual venv — uv run handles the rest)"
-	@echo "make up            docker compose up (Postgres/Redpanda/fake-gcs-server/Redis)"
+	@echo "make up            docker compose up (Postgres/Redpanda/fake-gcs-server)"
 	@echo "make down          docker compose down"
 	@echo "make init-db       apply migrations/*.sql"
-	@echo "make reset         truncate ledger, clear GCS, wipe Redpanda, flush Redis"
+	@echo "make reset         truncate ledger, clear GCS, wipe Redpanda"
 	@echo "make topics        create every Kafka topic"
 	@echo "make fixtures      generate + upload the 14 fixtures"
 	@echo "make run-local     run all consumers as host processes (mock LLM, fast)"
@@ -143,7 +143,7 @@ e2e:
 
 # No `reset` tag here (unlike e2e): those tasks target docker-compose's
 # host infra, which e2e-k8s no longer uses at all. cluster-rebuild's
-# `minikube delete` + fresh in-cluster postgres/redis/redpanda/fake-gcs-server
+# `minikube delete` + fresh in-cluster postgres/redpanda/fake-gcs-server
 # pods (see k8s/templates/infra.yaml) already guarantee empty state every
 # run — a stronger reset than truncate/flush ever was.
 e2e-k8s:

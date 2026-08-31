@@ -35,7 +35,7 @@
     # Plain `docker compose` CLI, not the community.docker collection module
     # — an older, incompatible community.docker version wins resolution on
     # this box's collection search path.
-    - name: Start docker-compose infra (Postgres/Redpanda/fake-gcs-server/Redis)
+    - name: Start docker-compose infra (Postgres/Redpanda/fake-gcs-server)
       ansible.builtin.command:
         cmd: docker compose up -d
         chdir: "{{ repo_root }}"
@@ -73,7 +73,7 @@
       tags: [init-db, reset, e2e]
 
     # ══════════════════════════════════════════════════ reset ══════════
-    # Truncate the ledger, clear GCS, recreate Redpanda, flush Redis. Must
+    # Truncate the ledger, clear GCS, recreate Redpanda. Must
     # run before topics/fixtures below and after migrations — file order is
     # execution order regardless of --tags (see AGENT.md).
     - name: Truncate ledger tables and reset the auto-post flag
@@ -120,17 +120,6 @@
       retries: 30
       delay: 1
       changed_when: false
-      tags: [reset]
-
-    - name: Flush Redis
-      ansible.builtin.shell:
-        cmd: >
-          {{ dotenv_cmd }} uv run python3 -c
-          "import redis; from docpipeline import config;
-          redis.from_url(config.REDIS_URL).flushdb()"
-        chdir: "{{ repo_root }}"
-        executable: /bin/bash
-      changed_when: true
       tags: [reset]
 
     - name: Clear local mock-OCR registry, fixture manifest, and per-service logs

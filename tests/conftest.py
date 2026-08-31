@@ -77,7 +77,7 @@ def doc_id():
 
 
 @pytest.fixture(autouse=True)
-def _clear_mock_llm():
+def _clear_deterministic_extractor():
     yield
     deterministic_extractor.DeterministicExtractor.clear()
 

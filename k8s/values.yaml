@@ -18,7 +18,7 @@ gpuWatchdog:
 # Every consumer's env. This ConfigMap is what turns one docpipeline image into
 # the 9 single-purpose Deployments below.
 #
-# Postgres/Redpanda/fake-gcs-server/Redis run in-cluster (templates/infra.yaml,
+# Postgres/Redpanda/fake-gcs-server run in-cluster (templates/infra.yaml,
 # wave -1), litellm/langfuse come from the sibling repo's stack; all reached by
 # cluster DNS. e2e-k8s-only -- host-mode `make e2e` uses docker-compose and
 # shares no infrastructure or ledger with this path.
@@ -41,7 +41,6 @@ config:
   GCS_BUCKET: "docpipeline-local"
   GOOGLE_CLOUD_PROJECT: "local-project"
 
-  REDIS_URL: "redis://redis.default.svc.cluster.local:6379/0"
 
   OCR_ENGINE: "deterministic"
   # Must be GCS: the fixtures Job writes this and ocr-shard reads it, and they

@@ -302,7 +302,7 @@ footer.close a{color:var(--ink-dim);}
     <div class="step" data-step="4">
       <div class="step-eyebrow">04 &middot; Extraction funnel</div>
       <h3>Cheap model first, gated at every step</h3>
-      <p>Mock/cheap/strong tiers, each result checked by five deterministic gates before anything auto-posts. First-writer-wins on commit -- a redelivered retry can never overwrite an already-committed result.</p>
+      <p>Deterministic/cheap/strong tiers, each result checked by five deterministic gates before anything auto-posts. First-writer-wins on commit -- a redelivered retry can never overwrite an already-committed result.</p>
     </div>
     <div class="step" data-step="5">
       <div class="step-eyebrow">05 &middot; Watched and self-healing</div>
@@ -616,7 +616,7 @@ footer.close a{color:var(--ink-dim);}
           <rect class="box" x="20" y="554" width="165" height="26" rx="10" fill="rgba(96,165,250,0.1)" stroke="#60A5FA" stroke-width="1.4"/>
           <use href="#ic-flask" x="30" y="560" width="14" height="14" class="ic" color="#BFDBFE" stroke="#BFDBFE"/>
           <text x="50" y="571" font-size="9.5" font-weight="700" fill="#F1F5F9">Extraction funnel</text>
-          <text class="subtext" x="30" y="607" font-size="7" fill="#94A3B8">EXTRACTION_MODE=mock swaps a deterministic stub in for both tiers</text>
+          <text class="subtext" x="30" y="607" font-size="7" fill="#94A3B8">EXTRACTION_MODE=deterministic parses the fixture text instead of calling a model</text>
           <g class="replica-badge">
             <rect x="47" y="588" width="70" height="14" rx="7" fill="rgba(251,191,36,0.14)" stroke="rgba(251,191,36,0.4)" stroke-width="1"/>
             <text x="82" y="598" font-size="7.5" font-weight="700" fill="#FBBF24" text-anchor="middle">&times;1&ndash;3 &middot; KEDA</text>
@@ -672,8 +672,8 @@ footer.close a{color:var(--ink-dim);}
           <rect x="392" y="618" width="52" height="16" rx="8" fill="rgba(251,191,36,0.12)" stroke="#FBBF24" stroke-width="1"/>
           <text x="418" y="629" font-size="7" font-weight="700" fill="#FBBF24" text-anchor="middle">review</text>
 
-          <text x="454" y="623" font-size="6" fill="#64748B">EXTRACTION_MODE=mock</text>
-          <text x="454" y="632" font-size="6" fill="#64748B">stubs out both tiers</text>
+          <text x="454" y="623" font-size="6" fill="#64748B">EXTRACTION_MODE=</text>
+          <text x="454" y="632" font-size="6" fill="#64748B">deterministic skips both</text>
         </g>
 
         <!-- ══ BAND 4 (in-cluster, async) · RECONCILIATION ══
@@ -842,7 +842,7 @@ footer.close a{color:var(--ink-dim);}
   <div class="cards3">
     <div class="card c-slate reveal" style="--i:0">
       <div class="card-top"><svg class="ic-card" viewBox="0 0 20 20"><use href="#ic-shield-check"/></svg><div class="num">01</div></div>
-      <h3>59 tests, real infra<span class="ref" data-jump="apx-a3">A3</span></h3>
+      <h3>86 tests, real infra<span class="ref" data-jump="apx-a3">A3</span></h3>
       <p>Every fixture lands on its predicted terminal state -- no mocked Postgres, no mocked Kafka. The lock/join semantics under test are exactly what a mock would paper over.</p>
     </div>
     <div class="card c-amber reveal" style="--i:1">
@@ -901,8 +901,7 @@ footer.close a{color:var(--ink-dim);}
       <tr><td class="mono">Postgres</td><td>The ledger &mdash; state machine, outbox, scatter-gather join</td><td class="mono">docker-compose (make e2e) &middot; ArgoCD-managed in-cluster pod (make e2e-k8s)</td></tr>
       <tr><td class="mono">Redpanda</td><td>Kafka-API-compatible broker</td><td class="mono">docker-compose (make e2e) &middot; ArgoCD-managed in-cluster pod (make e2e-k8s)</td></tr>
       <tr><td class="mono">fake-gcs-server</td><td>GCS-compatible object store (claim-check payloads)</td><td class="mono">docker-compose (make e2e) &middot; ArgoCD-managed in-cluster pod (make e2e-k8s)</td></tr>
-      <tr><td class="mono">Redis</td><td>Mock-OCR registry, cross-process test state</td><td class="mono">docker-compose (make e2e) &middot; ArgoCD-managed in-cluster pod (make e2e-k8s)</td></tr>
-      <tr><td class="mono">Ansible</td><td>Sole orchestration layer &mdash; replaces bash scripts + raw kubectl/helm</td><td class="mono">tagged playbook, ansible/site.yml</td></tr>
+            <tr><td class="mono">Ansible</td><td>Sole orchestration layer &mdash; replaces bash scripts + raw kubectl/helm</td><td class="mono">tagged playbook, ansible/site.yml</td></tr>
       <tr><td class="mono">ArgoCD</td><td>GitOps deploy for every K8s manifest, KEDA included</td><td class="mono">reused from sibling repo's terraform</td></tr>
       <tr><td class="mono">KEDA</td><td>Autoscaling on Kafka consumer lag</td><td class="mono">2.x, ArgoCD-managed Application</td></tr>
       <tr><td class="mono">LiteLLM + Ollama</td><td>Real LLM tier &mdash; llama3.2:1b / qwen2.5:1.5b</td><td class="mono">reused from sibling mlops-llm-repo</td></tr>

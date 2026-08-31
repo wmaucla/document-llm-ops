@@ -84,9 +84,6 @@ GOOGLE_CLOUD_PROJECT = os.environ.get("GOOGLE_CLOUD_PROJECT", "local-project")
 # so every call in infra/gcs.py passes this explicitly rather than inheriting it.
 GCS_TIMEOUT_SECONDS = _float("GCS_TIMEOUT_SECONDS", 30.0)
 
-# --- Redis ---
-REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6380/0")
-
 # --- OCR ---
 OCR_ENGINE = os.environ.get("OCR_ENGINE", "deterministic")  # deterministic | tesseract
 OCR_DPI = _int("OCR_DPI", 150)

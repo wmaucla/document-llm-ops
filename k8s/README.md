@@ -10,7 +10,7 @@ Chart.yaml                  chart metadata
 values.yaml                 the actual config — services, resources, KEDA targets, env
 templates/
   configmap.yaml             docpipeline-config — wave -1
-  infra.yaml                 Postgres/Redis/Redpanda/fake-gcs-server — wave -1
+  infra.yaml                 Postgres/Redpanda/fake-gcs-server — wave -1
   jobs.yaml                  migrate/topics/fixtures one-off Jobs — wave 0
   deployment.yaml             the 8 app-tier Deployments (+ optional metrics Service) — wave 1
   keda.yaml                  2 ScaledObjects (ocr-shard, extraction) — wave 2

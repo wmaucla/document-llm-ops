@@ -485,7 +485,7 @@ stack, not mocks.
   `path: k8s` or to `--local ./k8s` sync required. Helm-rendered output was diffed object-for-object
   against the original flat manifests before the old files were deleted (byte-identical on all 11
   objects). This whole directory is what `docpipeline`'s Application syncs — `templates/infra.yaml`
-  (Postgres/Redis/Redpanda/fake-gcs-server, sync-wave `-1`) and `templates/jobs.yaml`
+  (Postgres/Redpanda/fake-gcs-server, sync-wave `-1`) and `templates/jobs.yaml`
   (migrate/topics/fixtures one-off Jobs, sync-wave `0`) are part of that same sync now too, not a
   separate raw-kubectl step — see [HISTORY.md](HISTORY.md)'s ArgoCD/Helm migration entry for the
   full story and the sync-wave gotcha that came with it.
@@ -600,7 +600,7 @@ of a plain one.**
 ## ArgoCD: both apps, no exceptions but two
 
 Every K8s-manifest deploy in this repo — the 9 app Deployments, the in-cluster infra
-(Postgres/Redis/Redpanda/fake-gcs-server), Prometheus/Grafana, the setup Jobs, ConfigMap, and
+(Postgres/Redpanda/fake-gcs-server), Prometheus/Grafana, the setup Jobs, ConfigMap, and
 ScaledObjects, all in `k8s/` — *and* the KEDA operator itself — goes through ArgoCD (`argocd app
 sync <name>`), not raw
 `kubectl apply`/`helm install`. There are exactly two `kubectl`-via-Ansible calls left in the whole

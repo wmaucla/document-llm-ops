@@ -28,7 +28,7 @@ changes](docs/document-states.png)
 **Status: live-verified end to end**, twice over via two genuinely separate paths that share no
 infrastructure — `make e2e` (host processes, mock LLM, ~15s) and `make e2e-k8s` (Kubernetes
 Deployments, real LLM, entirely ArgoCD-driven, KEDA actually observed scaling a Deployment from 1
-to 3 replicas under a real backlog). 82 tests pass against real infra, not mocked. See
+to 3 replicas under a real backlog). 86 tests pass against real infra, not mocked. See
 [tests/README.md](tests/README.md) and the walkthrough in
 [`presentations/`](presentations/llmops-document-pipeline-workflow.html).
 
@@ -56,7 +56,7 @@ argocd/                       the two Application objects — argocd/README.md
 ansible/                      the sole orchestration layer — ansible/README.md
 presentations/                a scrollytelling architecture walkthrough (open the .html directly)
 Dockerfile                    builds the image make image loads into minikube's docker daemon
-docker-compose.yml             Postgres/Redpanda/fake-gcs-server/Redis — make e2e (host mode) only
+docker-compose.yml             Postgres/Redpanda/fake-gcs-server — make e2e (host mode) only
 Makefile                      the single entrypoint — make help for the full command list
 AGENT.md                      implementation gotchas, mechanics, open bugs (current-state)
 HISTORY.md                    session-by-session log of past debugging and build work
@@ -73,7 +73,7 @@ checkout of `mlops-llm-repo` as a sibling directory.
 
 ```bash
 make install                 # uv sync — no venv to create or activate yourself
-cp .env.example .env         # check for port conflicts with any local postgres/redis first
+cp .env.example .env         # check for port conflicts with any local postgres first
 make e2e                     # up, init-db, topics, fixtures, run consumers, drain, test
 ```
 
@@ -87,14 +87,14 @@ same way, e.g. `uv run pytest tests/ -v` or `uv run python3 -m docpipeline.stage
 - **`make e2e-k8s`** — full loop, entirely in-cluster (no docker-compose), and **destructive**:
   `minikube delete` + `minikube start`, rebuilds the sibling `mlops-llm-repo`'s entire stack via
   *its own* `terraform apply`, then builds the image, deploys everything through one ArgoCD
-  Application (app tier, KEDA, Postgres/Redis/Redpanda/fake-gcs-server, Prometheus/Grafana — see
+  Application (app tier, KEDA, Postgres/Redpanda/fake-gcs-server, Prometheus/Grafana — see
   [k8s/README.md](k8s/README.md)), drains a small real-LLM fixture subset, and runs the synthetic
   canary against the live deployment. ~15-20 min typical (cluster rebuild dominates).
 
 Other useful targets:
 
 ```bash
-make reset             # truncate ledger, clear GCS, wipe Redpanda, flush Redis (make e2e only)
+make reset             # truncate ledger, clear GCS, wipe Redpanda (make e2e only)
 make canary             # inject + track one synthetic document end to end
 make dlq-replay         # re-drive failed docs whose build_sha/prompt_version changed
 make deadmans-switch    # check for total silence (exits 1 if unhealthy — cron/alerting friendly)
@@ -159,8 +159,8 @@ transition table.
   tier wouldn't have this problem; it's a mock-LLM limitation, not a pipeline-mechanics gap.
 - **No ensemble/consensus tier.** The role-swap gap (grounding can't verify seller/buyer
   assignment) is proven to exist (`test_extraction_funnel.py`) but not remediated.
-- **No central Redis token governor** — Redis is stood up as part of the infra tier, but nothing
-  reads or writes to it yet; no concurrent LLM call volume locally would exercise one.
+- **No central token governor** — nothing rate-limits concurrent LLM calls; local volume never
+  makes one necessary. Redis was stood up for this once and removed when it stayed unused.
 - **No Argo Workflow wrapper for the operator lanes** — Argo Workflows already runs in this same
   minikube cluster for the sibling repo, so this would be additive, not a redesign; not done here
   since the interesting part is the guardrails inside `operator.py`, not the YAML that invokes it.

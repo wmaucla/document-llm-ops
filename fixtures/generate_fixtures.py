@@ -161,7 +161,7 @@ def build() -> dict:
     upload("eu_locale", pdf_with_text_pages([eu_lines]), "application/pdf")
 
     print("buyer/seller both present (role-assignment gap fixture — register")
-    print("mock_llm 'swapped_roles' behaviour on this doc_id in your test):")
+    print("deterministic_extractor 'swapped_roles' behaviour on this doc_id):")
     upload("role_swap_candidate", pdf_with_text_pages([fixture_content.ROLE_SWAP_CANDIDATE_LINES]), "application/pdf")
 
     return manifest
