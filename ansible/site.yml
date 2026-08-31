@@ -475,12 +475,9 @@
     # host-load-dependent, observed from ~150s to 7.5 minutes for one call.
     # FIXTURE_LIMIT=4 fixes contention *between* documents; this is separate
     # margin for raw inference speed, which pipeline-side tuning can't control.
-    # --extraction-mode real is load-bearing, not cosmetic -- canary.py can't
-    # infer real-vs-mock from ambient env, and without it wrongly fails a run
-    # that legitimately landed in `review`.
     - name: Run the synthetic canary
       ansible.builtin.command:
-        cmd: "kubectl exec deploy/docpipeline-triage -- python -m docpipeline.reconciliation.canary --slo-seconds 900 --extraction-mode real"
+        cmd: "kubectl exec deploy/docpipeline-triage -- python -m docpipeline.reconciliation.canary --slo-seconds 900"
       changed_when: false
       tags: [canary, e2e-k8s]
 

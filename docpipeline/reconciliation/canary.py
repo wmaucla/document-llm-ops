@@ -52,18 +52,7 @@ def synthetic_invoice_pdf_bytes(invoice_no: str) -> bytes:
 def run_canary(
     slo_seconds: int = config.CANARY_SLO_SECONDS,
     poll_interval: float = 1.0,
-    extraction_mode: str | None = None,
 ) -> dict:
-    # The canary process itself never calls the LLM -- it only watches ledger
-    # state -- so its own ambient config.EXTRACTION_MODE (from *this*
-    # process's env) says nothing about how the doc actually got processed.
-    # Against the K8s pipeline this is invoked from the host with the host's
-    # own (mock-default) env while the extraction pods that actually touch
-    # the doc run with EXTRACTION_MODE=real from the K8s ConfigMap -- callers
-    # that know which pipeline they're pointed at should say so explicitly
-    # via extraction_mode rather than relying on that coincidence.
-    if extraction_mode is None:
-        extraction_mode = config.EXTRACTION_MODE
     invoice_no = f"CANARY-{uuid.uuid4().hex[:12]}"
     data = synthetic_invoice_pdf_bytes(invoice_no)
     info = gcs.upload_bytes(f"inbox/_canary_{uuid.uuid4().hex}.pdf", data, "application/pdf")
@@ -88,19 +77,10 @@ def run_canary(
                 if doc["state"] == "complete":
                     latency = time.monotonic() - started
                     return {"ok": True, "doc_id": info.doc_id, "latency_seconds": round(latency, 2)}
-                # Under a real model, landing in review means a quality gate
-                # correctly caught an occasional extraction mistake -- that's
-                # the pipeline working, not the pipeline being down, so it's a
-                # pass here too. In mock mode extraction is deterministic, so
-                # review still means something is actually broken.
-                if doc["state"] == "review" and extraction_mode == "real":
-                    latency = time.monotonic() - started
-                    return {
-                        "ok": True,
-                        "doc_id": info.doc_id,
-                        "latency_seconds": round(latency, 2),
-                        "reason": "landed in review (gate caught it; expected under real-model variance)",
-                    }
+                # `review` counts as failure in both modes. It was accepted as
+                # a pass under real mode while bug #7 put the canary there
+                # routinely; with that fixed the absorption only blinded the
+                # canary to the exact class of failure it exists to catch.
                 if doc["state"] in ("review", "failed"):
                     return {"ok": False, "doc_id": info.doc_id, "reason": f"landed in {doc['state']}, not complete"}
             time.sleep(poll_interval)
@@ -119,17 +99,9 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
     parser = argparse.ArgumentParser()
     parser.add_argument("--slo-seconds", type=int, default=config.CANARY_SLO_SECONDS)
-    parser.add_argument(
-        "--extraction-mode",
-        default=None,
-        choices=["mock", "real"],
-        help="What pipeline this canary is pointed at -- decides whether landing in "
-             "review counts as a pass. Defaults to this process's own config.EXTRACTION_MODE, "
-             "which is usually wrong when driving a separate K8s pipeline from the host.",
-    )
     args = parser.parse_args()
 
-    result = run_canary(args.slo_seconds, extraction_mode=args.extraction_mode)
+    result = run_canary(args.slo_seconds)
     print(result)
     if not result["ok"]:
         log.critical("CANARY FAILED: %s", result)

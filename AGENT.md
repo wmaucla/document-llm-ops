@@ -249,8 +249,8 @@ stays current-state only.
    during the forced-CPU run 5 of them waited the full 1500s for redrive. **That reasoning is
    wrong**, and the change would reintroduce this very bug on the `_pending` side.
 
-   Measured directly (`local_scripts/measure_pending_lag.py`) under a 10-document forced-CPU
-   backlog, three consecutive stable samples:
+   Measured directly under a 10-document forced-CPU backlog — sampling `extract_pending` counts
+   and `rpk group describe extraction`'s TOTAL-LAG together — three consecutive stable samples:
 
        extract_pending=6  extract_running=3  ocr.completed TOTAL-LAG=9
 
@@ -264,9 +264,9 @@ stays current-state only.
    The 1500s wait is therefore the system correctly declining to interfere with a deep queue, not a
    regression in time-to-recovery. **If you ever revisit this, the trigger is `lag ≈ 0` while
    documents sit in `extract_pending`** — that would mean messages genuinely went missing, and only
-   then does a per-state split make sense. Re-run the script under bug #1's forced-CPU recipe to
-   check; note it deliberately records no reading during a rebalance, because `rpk` reports lag 0
-   there and that is indistinguishable from a drained topic.
+   then does a per-state split make sense. To re-check, sample both together under bug #1's
+   forced-CPU recipe; discard any sample taken while the group is rebalancing, because `rpk`
+   reports lag 0 there and that is indistinguishable from a drained topic.
 4. **Fixed 2026-08-30 — the outbox relay no longer marks undelivered messages as published.**
    `relay_once` discarded `producer.flush()`'s return value; `flush()` reports how many messages
    are *still queued*, so on a slow or partitioned broker the `UPDATE outbox SET published_at`

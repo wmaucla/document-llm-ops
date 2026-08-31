@@ -97,11 +97,6 @@ def object_info(gcs_path: str) -> ObjectInfo:
     )
 
 
-def list_paths(prefix: str) -> list[str]:
-    bucket = ensure_bucket()
-    return [f"gs://{config.GCS_BUCKET}/{b.name}" for b in bucket.list_blobs(prefix=prefix, timeout=config.GCS_TIMEOUT_SECONDS)]
-
-
 def delete_prefix(prefix: str) -> None:
     bucket = ensure_bucket()
     for blob in bucket.list_blobs(prefix=prefix, timeout=config.GCS_TIMEOUT_SECONDS):

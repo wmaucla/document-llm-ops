@@ -8,10 +8,7 @@ incidental plumbing (see "Substrate — a relational DB, not a log").
 
 from __future__ import annotations
 
-import contextlib
 import datetime
-import json
-from dataclasses import dataclass
 
 import psycopg
 from psycopg.rows import dict_row
@@ -71,13 +68,6 @@ def connect(role: str = "rw", autocommit: bool = False) -> psycopg.Connection:
     )
     conn.autocommit = autocommit
     return conn
-
-
-@contextlib.contextmanager
-def transaction(conn: psycopg.Connection):
-    with conn.cursor() as cur:
-        yield cur
-    conn.commit()
 
 
 def transition(cur, doc_id: str, to_state: str, *, from_states: set[str] | None = None, idempotent: bool = True) -> str:

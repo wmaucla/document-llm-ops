@@ -105,14 +105,6 @@ def register_mock_ocr_page(doc_id: str, page_no: int, text: str, confidence: flo
     _write_registry(loc, registry)
 
 
-def register_mock_ocr_image(image_bytes: bytes, text: str, confidence: float = 0.95,
-                             location: str | Path | None = None) -> None:
-    loc = str(location) if location is not None else registry_location()
-    registry = _read_registry(loc)
-    registry[image_checksum(image_bytes)] = {"text": text, "confidence": confidence}
-    _write_registry(loc, registry)
-
-
 class TesseractOcrEngine(OcrEngine):
     def ocr_page(self, doc_id: str, page_no: int, image_bytes: bytes) -> tuple[str, float]:
         import pytesseract
