@@ -27,7 +27,7 @@ changes](docs/document-states.png)
 **Status: live-verified end to end**, twice over via two genuinely separate paths that share no
 infrastructure — `make e2e` (host processes, mock LLM, ~15s) and `make e2e-k8s` (Kubernetes
 Deployments, real LLM, entirely ArgoCD-driven, KEDA actually observed scaling a Deployment from 1
-to 3 replicas under a real backlog). 77 tests pass against real infra, not mocked. See
+to 3 replicas under a real backlog). 82 tests pass against real infra, not mocked. See
 [tests/README.md](tests/README.md) and the walkthrough in
 [`presentations/`](presentations/llmops-document-pipeline-workflow.html).
 

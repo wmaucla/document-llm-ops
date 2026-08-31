@@ -43,6 +43,21 @@ def handle_text_embedded(cur, doc_id: str, gcs_path: str) -> str:
         ledger.transition(cur, doc_id, "text_pending", from_states={"text_running"})
         return f"fallthrough_to_ocr:{reason}"
 
+    # ── TIER 0 ─────────────────────────────────────────────────────────────
+    # The document already had a usable text layer, so it is done with text
+    # production right here: no rasterising, no OCR, no split, no shards, no
+    # scatter-gather join. pypdf did the whole job for $0 and in milliseconds.
+    #
+    # This is the fork the architecture diagram draws as "tier-0 has text layer
+    # · skips OCR" running straight from the PDF worker down to the extraction
+    # funnel, bypassing the entire fan-out band.
+    #
+    # Note it still publishes `ocr.completed` despite no OCR having happened —
+    # the topic name describes the *milestone* ("text for this document now
+    # exists in GCS"), not the mechanism that produced it. Extraction consumes
+    # one topic and neither knows nor cares which path produced the text, which
+    # is what keeps the two routes from needing two downstream code paths. The
+    # scatter-gather join publishes the identical message for sharded documents.
     pages = [{"page_no": i, "text": t} for i, t in enumerate(pages_text)]
     artifact.write_assembled(doc_id, producer="pypdf-text", producer_version="v1", pages=pages)
     ledger.transition(cur, doc_id, "extract_pending", from_states={"text_running"})
