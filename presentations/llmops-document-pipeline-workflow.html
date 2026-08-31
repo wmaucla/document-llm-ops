@@ -323,7 +323,7 @@ footer.close a{color:var(--ink-dim);}
       </div>
       <div class="diagram-hint">Click any box for detail</div>
       <svg id="archSvg" viewBox="0 0 560 748" preserveAspectRatio="xMidYMid meet" role="img"
-           aria-label="Architecture diagram, vertical layout, four stacked bands inside a Kubernetes cluster boundary, fed from two external boxes above it: Ansible plus ArgoCD, which provisions and deploys everything, and 14 fixture PDFs as the upload source. Band one, ingest and ledger: orphan detector, triage, Postgres ledger, left to right. Band two, fan-out and join: PDF worker, then three separate OCR shard replica boxes drawn stacked, each with its own curved arrow fanning out from PDF worker and its own curved arrow gathering into the scatter-gather join (a KEDA range of 1 to 5 is shown as a small badge below the three boxes, since only three are drawn). The PDF worker is also a fork point: a document with an existing text layer skips straight down to the extraction funnel; a document needing OCR goes right to the OCR shard replicas and the join, which also feeds down into the extraction funnel. Band three, extraction and gates: the extraction funnel (a stack-of-replicas illustration, KEDA-scaled 1 to 3), five quality gates, and the outbox to sink (a fixed stack of 2 replicas). Band four, a dashed reconciliation strip listing three execution models: Deployments (sweeper, orphan detector, GPU watchdog), CronJobs (terminal report, prune, dead man's switch), and on-demand lanes (DLQ replay, canary), labelled async and no Kafka. Every node's icon and title sit centered in the box by default; clicking a node moves them to the top and reveals its detail line below. Two alternate paths are drawn alongside the happy path, each ending in a small labeled pill, not a dangling line: triage can route a bad upload straight to a failed or review pill without touching the rest of the pipeline, and the extraction funnel exhausting its gates routes to a review pill the same way. The gates have exactly two outputs: the unlabelled arrow onward to the outbox is the path taken when every blocking gate passes, and a labelled branch reading 'a blocking gate fails' routes to a review pill. The reconciliation band is not fed by the pipeline at all; it is labelled as reading the ledger and never Kafka. A curved dashed loop shows it redriving review, failed and stuck documents back into the extraction funnel.">
+           aria-label="Architecture diagram, vertical layout, four stacked bands inside a Kubernetes cluster boundary, fed from two external boxes above it: Ansible plus ArgoCD, which provisions and deploys everything, and 14 fixture PDFs as the upload source. Band one, ingest and ledger: orphan detector, triage, Postgres ledger, left to right. Band two, fan-out and join: PDF worker, then three separate OCR shard replica boxes drawn stacked, each with its own curved arrow fanning out from PDF worker and its own curved arrow gathering into the scatter-gather join (a KEDA range of 1 to 5 is shown as a small badge below the three boxes, since only three are drawn). The PDF worker is also a fork point: a document with an existing text layer skips straight down to the extraction funnel; a document needing OCR goes right to the OCR shard replicas and the join, which also feeds down into the extraction funnel. Band three, extraction and gates: the extraction funnel (a stack-of-replicas illustration, KEDA-scaled 1 to 3) with its two model tiers drawn beside it as a vertical cascade -- cheap-fast (llama3.2:1b) first, escalating to cheap-balanced (qwen2.5:1.5b) only when a blocking gate rejects the cheap result, and to review when both are exhausted -- five quality gates, and the outbox to sink (a fixed stack of 2 replicas). Band four, a dashed reconciliation strip listing three execution models: Deployments (sweeper, orphan detector, GPU watchdog), CronJobs (terminal report, prune, dead man's switch), and on-demand lanes (DLQ replay, canary), labelled async and no Kafka. Every node's icon and title sit centered in the box by default; clicking a node moves them to the top and reveals its detail line below. Two alternate paths are drawn alongside the happy path, each ending in a small labeled pill, not a dangling line: triage can route a bad upload straight to a failed or review pill without touching the rest of the pipeline, and the extraction funnel exhausting its gates routes to a review pill the same way. The gates have exactly two outputs: the unlabelled arrow onward to the outbox is the path taken when every blocking gate passes, and a labelled branch reading 'a blocking gate fails' routes to a review pill. The reconciliation band is not fed by the pipeline at all; it is labelled as reading the ledger and never Kafka. A curved dashed loop shows it redriving review, failed and stuck documents back into the extraction funnel.">
         <defs>
           <marker id="a-g" markerWidth="8" markerHeight="8" refX="6.2" refY="4" orient="auto">
             <path d="M0.5,1 L6.5,4 L0.5,7" fill="none" stroke="rgba(255,255,255,.55)" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
@@ -616,11 +616,24 @@ footer.close a{color:var(--ink-dim);}
           <rect class="box" x="20" y="554" width="165" height="26" rx="10" fill="rgba(96,165,250,0.1)" stroke="#60A5FA" stroke-width="1.4"/>
           <use href="#ic-flask" x="30" y="560" width="14" height="14" class="ic" color="#BFDBFE" stroke="#BFDBFE"/>
           <text x="50" y="571" font-size="9.5" font-weight="700" fill="#F1F5F9">Extraction funnel</text>
-          <text class="subtext" x="30" y="615" font-size="7.5" fill="#94A3B8">mock &middot; cheap &middot; strong</text>
+          <text class="subtext" x="30" y="607" font-size="7" fill="#94A3B8">EXTRACTION_MODE=mock swaps a deterministic stub in for both tiers</text>
           <g class="replica-badge">
             <rect x="47" y="588" width="70" height="14" rx="7" fill="rgba(251,191,36,0.14)" stroke="rgba(251,191,36,0.4)" stroke-width="1"/>
             <text x="82" y="598" font-size="7.5" font-weight="700" fill="#FBBF24" text-anchor="middle">&times;1&ndash;3 &middot; KEDA</text>
           </g>
+
+          <!-- Tiers as one horizontal line under the band. They are a
+               different axis from the three boxes above (those are KEDA
+               replicas), and every document walks the same order -- so a
+               cascade, not a fork, and not one model per replica. -->
+          <text x="20" y="617" font-size="6.5" font-weight="800" letter-spacing="0.05em" fill="#64748B">TIERS</text>
+          <text x="50" y="617" font-size="6.5" font-weight="700" fill="#4ADE80">1 &middot; cheap-fast</text>
+          <text x="106" y="617" font-size="6.5" fill="#94A3B8">llama3.2:1b</text>
+          <text x="156" y="617" font-size="6.5" fill="#FBBF24">&rarr; on gate reject &rarr;</text>
+          <text x="232" y="617" font-size="6.5" font-weight="700" fill="#60A5FA">2 &middot; cheap-balanced</text>
+          <text x="312" y="617" font-size="6.5" fill="#94A3B8">qwen2.5:1.5b</text>
+          <text x="366" y="617" font-size="6.5" fill="#94A3B8">&rarr; both exhausted &rarr;</text>
+          <text x="442" y="617" font-size="6.5" font-weight="700" fill="#FBBF24">review</text>
         </g>
         <g data-key="gatesNode" class="clickable">
           <rect class="box" x="205" y="494" width="160" height="68" rx="14" fill="rgba(96,165,250,0.08)" stroke="#60A5FA" stroke-width="1.4"/>
@@ -693,7 +706,7 @@ footer.close a{color:var(--ink-dim);}
   <h2>Where documents end up</h2>
   <p class="lede">Three terminal states, but only one of them is truly final. <span class="mono-inline">complete</span> has no outgoing transition at all; <span class="mono-inline">review</span> and <span class="mono-inline">failed</span> are parking states that are legal to leave &mdash; the question is whether anything ever does.</p>
 
-  <svg id="stateSvg" viewBox="0 0 560 470" preserveAspectRatio="xMidYMid meet" role="img"
+  <svg id="stateSvg" viewBox="0 0 560 492" preserveAspectRatio="xMidYMid meet" role="img"
        aria-label="Document end-state diagram. Three terminal states in a column. Complete, in green, is entered when every blocking gate passes, or by an operator override from review; it is absorbing, with no way out, and emits document.extracted through the outbox to the sink, writing a posted_documents row. Review, in amber, is entered by a triage reject, by the extraction funnel exhausting all six model calls, by the business dedupe gate catching a rescanned duplicate, or by the auto-post kill switch being off; nothing automatic ever leaves it, and the only exits are an operator force_redrive back to extract_pending or accept_review straight to complete. Failed, in red, is entered when the sweeper caps attempts at five or triage hits a hard failure; it is left only by DLQ replay, and only when build_sha or prompt_version has changed since the document last failed.">
 
     <text x="14" y="16" font-size="8.5" font-weight="800" letter-spacing="0.08em" fill="#64748B">HOW IT GETS THERE</text>
@@ -716,57 +729,71 @@ footer.close a{color:var(--ink-dim);}
       <text x="406" y="73" font-size="6.5" fill="#64748B">complete &#8800; posted: the relay may lag</text>
     </g>
 
-    <!-- ══ REVIEW · parked, nothing automatic ever leaves ══ -->
+    <!-- ══ REVIEW · parked, nothing automatic ever leaves ══
+         The two exits are different operations, not variants: force_redrive
+         re-does the work, accept_review keeps the work and overrules the
+         verdict. Drawn in separate lanes because conflating them is exactly
+         the confusion this diagram exists to remove. -->
     <g data-key="stReview">
-      <text x="14" y="140" font-size="7.5" fill="#CBD5E1">triage rejected the upload</text>
-      <text x="14" y="154" font-size="7.5" fill="#CBD5E1">funnel exhausted 6 model calls</text>
-      <text x="14" y="168" font-size="7.5" fill="#CBD5E1">business_dedupe caught a duplicate</text>
-      <text x="14" y="182" font-size="7.5" fill="#FBBF24">auto-post kill switch is off</text>
-      <text x="14" y="194" font-size="6.5" fill="#64748B">&#8593; passed every gate; held back anyway</text>
-      <path d="M 196 160 L 232 160" stroke="#FBBF24" stroke-width="1.4" marker-end="url(#arrowAmber)"/>
+      <text x="14" y="132" font-size="7.5" fill="#CBD5E1">triage rejected the upload</text>
+      <text x="14" y="146" font-size="7.5" fill="#CBD5E1">funnel exhausted 6 model calls</text>
+      <text x="14" y="160" font-size="7.5" fill="#CBD5E1">business_dedupe caught a duplicate</text>
+      <text x="14" y="174" font-size="7.5" fill="#FBBF24">auto-post kill switch is off</text>
+      <text x="14" y="185" font-size="6.5" fill="#64748B">&#8593; passed every gate; held back anyway</text>
+      <path d="M 196 152 L 232 152" stroke="#FBBF24" stroke-width="1.4" marker-end="url(#arrowAmber)"/>
 
-      <rect x="240" y="136" width="120" height="48" rx="10" fill="rgba(251,191,36,0.10)" stroke="#FBBF24" stroke-width="1.8"/>
-      <text x="300" y="157" font-size="11" font-weight="800" fill="#FBBF24" text-anchor="middle">review</text>
-      <text x="300" y="171" font-size="6.5" fill="#94A3B8" text-anchor="middle">parked &mdash; human judgement</text>
+      <rect x="240" y="128" width="120" height="48" rx="10" fill="rgba(251,191,36,0.10)" stroke="#FBBF24" stroke-width="1.8"/>
+      <text x="300" y="149" font-size="11" font-weight="800" fill="#FBBF24" text-anchor="middle">review</text>
+      <text x="300" y="163" font-size="6.5" fill="#94A3B8" text-anchor="middle">parked &mdash; human judgement</text>
 
-      <path d="M 366 152 L 400 152" stroke="#FBBF24" stroke-width="1.4" marker-end="url(#arrowAmber)"/>
-      <text x="406" y="146" font-size="7.5" fill="#CBD5E1">force_redrive &rarr; extract_pending</text>
-      <path d="M 366 172 L 400 172" stroke="#FBBF24" stroke-width="1.4" marker-end="url(#arrowAmber)"/>
-      <text x="406" y="166" font-size="7.5" fill="#CBD5E1">accept_review &rarr; complete</text>
-      <text x="406" y="184" font-size="6.5" font-weight="700" fill="#F87171">nothing automatic ever leaves review</text>
-      <text x="406" y="195" font-size="6.5" fill="#64748B">DLQ replay skips it entirely</text>
+      <!-- lane 1: redo the work -->
+      <path d="M 366 138 L 400 138" stroke="#FBBF24" stroke-width="1.4" marker-end="url(#arrowAmber)"/>
+      <text x="406" y="135" font-size="7.5" font-weight="700" fill="#CBD5E1">force_redrive &rarr; extract_pending</text>
+      <text x="406" y="145" font-size="6.5" fill="#64748B">re-extracts from scratch. Must pass the gates</text>
+      <text x="406" y="154" font-size="6.5" fill="#64748B">again, so it only helps if something changed.</text>
+
+      <!-- lane 2: keep the work, overrule the verdict -->
+      <path d="M 366 172 L 400 172" stroke="#4ADE80" stroke-width="1.4" marker-end="url(#arrowGreen)"/>
+      <text x="406" y="169" font-size="7.5" font-weight="700" fill="#CBD5E1">accept_review &rarr; complete</text>
+      <text x="406" y="179" font-size="6.5" fill="#64748B">no re-extraction. A human judged the existing</text>
+      <text x="406" y="188" font-size="6.5" fill="#64748B">result correct; stamped operator_override.</text>
+
+      <text x="14" y="203" font-size="6.5" font-weight="700" fill="#F87171">Nothing automatic ever leaves review &mdash; DLQ replay skips it entirely.</text>
     </g>
 
     <!-- ══ FAILED · parked, left only on a version change ══ -->
     <g data-key="stFailed">
-      <text x="14" y="252" font-size="7.5" fill="#CBD5E1">sweeper capped attempts at 5</text>
-      <text x="14" y="266" font-size="7.5" fill="#CBD5E1">triage hard failure</text>
-      <text x="14" y="278" font-size="6.5" fill="#64748B">zero-byte, corrupt, over the page ceiling</text>
-      <path d="M 196 262 L 232 262" stroke="#F87171" stroke-width="1.4" marker-end="url(#arrowRed)"/>
+      <text x="14" y="266" font-size="7.5" fill="#CBD5E1">sweeper capped attempts at 5</text>
+      <text x="14" y="280" font-size="7.5" fill="#CBD5E1">triage hard failure</text>
+      <text x="14" y="291" font-size="6.5" fill="#64748B">zero-byte, corrupt, over the page ceiling</text>
+      <path d="M 196 276 L 232 276" stroke="#F87171" stroke-width="1.4" marker-end="url(#arrowRed)"/>
 
-      <rect x="240" y="238" width="120" height="48" rx="10" fill="rgba(248,113,113,0.10)" stroke="#F87171" stroke-width="1.8"/>
-      <text x="300" y="259" font-size="11" font-weight="800" fill="#F87171" text-anchor="middle">failed</text>
-      <text x="300" y="273" font-size="6.5" fill="#94A3B8" text-anchor="middle">parked &mdash; last_error says why</text>
+      <rect x="240" y="252" width="120" height="48" rx="10" fill="rgba(248,113,113,0.10)" stroke="#F87171" stroke-width="1.8"/>
+      <text x="300" y="273" font-size="11" font-weight="800" fill="#F87171" text-anchor="middle">failed</text>
+      <text x="300" y="287" font-size="6.5" fill="#94A3B8" text-anchor="middle">parked &mdash; last_error says why</text>
 
-      <path d="M 366 262 L 400 262" stroke="#F87171" stroke-width="1.4" marker-end="url(#arrowRed)"/>
-      <text x="406" y="256" font-size="7.5" fill="#CBD5E1">dlq_replay &rarr; text/extract_pending</text>
-      <text x="406" y="268" font-size="6.5" fill="#64748B">only if build_sha or prompt_version</text>
-      <text x="406" y="278" font-size="6.5" fill="#64748B">changed since it last failed</text>
+      <path d="M 366 276 L 400 276" stroke="#F87171" stroke-width="1.4" marker-end="url(#arrowRed)"/>
+      <text x="406" y="270" font-size="7.5" font-weight="700" fill="#CBD5E1">dlq_replay &rarr; text/extract_pending</text>
+      <text x="406" y="281" font-size="6.5" fill="#64748B">only if build_sha or prompt_version</text>
+      <text x="406" y="290" font-size="6.5" fill="#64748B">changed since it last failed</text>
     </g>
 
-    <!-- ══ the invariant that makes every re-drive safe ══ -->
-    <rect x="14" y="312" width="532" height="60" rx="10" fill="rgba(96,165,250,0.06)" stroke="#60A5FA" stroke-width="1.2" stroke-dasharray="5 4"/>
-    <text x="28" y="330" font-size="8" font-weight="800" fill="#60A5FA">Why re-driving is always safe</text>
-    <text x="28" y="344" font-size="7.5" fill="#CBD5E1">Every exit above targets a <tspan font-weight="700">_pending</tspan> state, never a <tspan font-weight="700">_running</tspan> one &mdash; and a _running state is only</text>
-    <text x="28" y="356" font-size="7.5" fill="#CBD5E1">enterable from its own _pending. A re-drive therefore cannot race a live worker, by construction</text>
-    <text x="28" y="368" font-size="7.5" fill="#CBD5E1">rather than by timing.</text>
+    <!-- Two distinct guards. An earlier version of this box claimed a re-drive
+         "cannot race a live worker", which is false -- the sweeper taking a
+         document mid-processing is exactly what bug #3 was. The race is
+         possible and resolved, not prevented. -->
+    <rect x="14" y="318" width="532" height="84" rx="10" fill="rgba(96,165,250,0.06)" stroke="#60A5FA" stroke-width="1.2" stroke-dasharray="5 4"/>
+    <text x="28" y="336" font-size="8" font-weight="800" fill="#60A5FA">Why a re-drive can't corrupt anything</text>
+    <text x="28" y="351" font-size="7.5" fill="#CBD5E1"><tspan font-weight="700">One worker at a time.</tspan> Entering <tspan font-weight="700">_running</tspan> is only legal from <tspan font-weight="700">_pending</tspan>, and that swap is one atomic</text>
+    <text x="28" y="363" font-size="7.5" fill="#CBD5E1">UPDATE. The second worker to try matches zero rows and raises, rather than becoming a copy.</text>
+    <text x="28" y="378" font-size="7.5" fill="#CBD5E1"><tspan font-weight="700">One result, ever.</tspan> The result column is writable once (<tspan font-weight="700">WHERE extraction_result IS NULL</tspan>), so a</text>
+    <text x="28" y="390" font-size="7.5" fill="#CBD5E1">worker that finishes after a re-drive has its answer discarded and the divergence logged.</text>
 
-    <rect x="14" y="384" width="532" height="72" rx="10" fill="rgba(100,116,139,0.06)" stroke="#64748B" stroke-width="1.2" stroke-dasharray="5 4"/>
-    <text x="28" y="402" font-size="8" font-weight="800" fill="#94A3B8">Reading a run honestly</text>
-    <text x="28" y="416" font-size="7.5" fill="#CBD5E1">&quot;8/8 settled&quot; means every document reached one of these three &mdash; <tspan font-weight="700">not</tspan> that all eight succeeded.</text>
-    <text x="28" y="428" font-size="7.5" fill="#CBD5E1">A review spike is the signal worth watching: it usually means inference degraded, not that the</text>
-    <text x="28" y="440" font-size="7.5" fill="#CBD5E1">documents were unusual. And a growing failed/review population is silent by construction &mdash; no</text>
-    <text x="28" y="452" font-size="7.5" fill="#CBD5E1">consumer retries them, so throughput looks perfect while work piles up. Hence the daily report.</text>
+    <rect x="14" y="416" width="532" height="62" rx="10" fill="rgba(100,116,139,0.06)" stroke="#64748B" stroke-width="1.2" stroke-dasharray="5 4"/>
+    <text x="28" y="434" font-size="8" font-weight="800" fill="#94A3B8">Reading a run</text>
+    <text x="28" y="449" font-size="7.5" fill="#CBD5E1"><tspan font-weight="700">&quot;8/8 settled&quot;</tspan> means all eight reached one of these three &mdash; not that all eight succeeded.</text>
+    <text x="28" y="461" font-size="7.5" fill="#CBD5E1">A jump in <tspan font-weight="700">review</tspan> usually means inference degraded, not that the documents were odd.</text>
+    <text x="28" y="473" font-size="7.5" fill="#CBD5E1">Nothing retries <tspan font-weight="700">failed</tspan> or <tspan font-weight="700">review</tspan>, so they pile up while throughput looks fine. Hence the daily report.</text>
 
     <defs>
       <marker id="arrowGreen" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse">

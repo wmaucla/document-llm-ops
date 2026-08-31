@@ -113,6 +113,10 @@ def run_forever() -> None:
         doc_id = payload["doc_id"]
         topic = msg.topic()
         try:
+            # The tier-0 *attempt* (see handle_text_embedded above): triage
+            # thought this document had a usable text layer. It ends in tier-0
+            # only if text_sanity agrees -- otherwise that function re-routes it
+            # to OCR, so arriving here does not guarantee the OCR band is skipped.
             if topic == "text.embedded":
                 with conn.cursor() as cur:
                     result = handle_text_embedded(cur, doc_id, payload["gcs_path"])
