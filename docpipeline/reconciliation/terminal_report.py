@@ -91,10 +91,6 @@ def collect_state(cur, state: str) -> dict:
     }
 
 
-def collect(cur) -> dict:
-    return {s: collect_state(cur, s) for s in ("failed", "review")}
-
-
 def render(report: dict) -> str:
     lines = ["=" * 64, "TERMINAL-STATE REPORT", "=" * 64]
     for state in ("failed", "review"):
@@ -131,7 +127,7 @@ def main() -> int:
     conn = ledger.connect(role="ro")
     try:
         with conn.cursor() as cur:
-            report = collect(cur)
+            report = {st: collect_state(cur, st) for st in ("failed", "review")}
     finally:
         conn.close()  # see AGENT.md "Connection-leak discipline"
 

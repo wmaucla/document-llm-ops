@@ -17,6 +17,7 @@ import json
 from pathlib import Path
 
 from docpipeline import config
+from docpipeline.infra import gcs
 
 # Top-level fixtures/, not docpipeline/fixtures/ -- this used to resolve one
 # directory too high. Read and write agreed, so host mode never noticed, but
@@ -24,33 +25,30 @@ from docpipeline import config
 DEFAULT_REGISTRY_PATH = Path(__file__).resolve().parent.parent.parent / "fixtures" / "generated" / "mock_ocr_registry.json"
 
 
-def registry_location() -> str:
-    """A gs:// URI or a local path. Local is fine only where the fixture
-    generator and the OCR workers share a filesystem; in k8s they are different
-    pods, so values.yaml points this at GCS (AGENT.md bug #9)."""
+def _resolve(location: str | Path | None) -> str:
+    """Where the registry lives: a gs:// URI or a local path.
+
+    Local is fine only where the fixture generator and the OCR workers share a
+    filesystem. In k8s they are different pods, so values.yaml points this at
+    GCS -- with a local path there, ocr-shard reads a stale copy baked into the
+    image and every OCR document extracts from "unregistered page" (AGENT.md
+    bug #9).
+    """
+    if location is not None:
+        return str(location)
     return config.MOCK_OCR_REGISTRY_URI or str(DEFAULT_REGISTRY_PATH)
 
 
-def _is_gcs(location: str) -> bool:
-    return str(location).startswith("gs://")
-
-
 def _read_registry(location: str) -> dict:
-    from docpipeline.infra import gcs
-
-    if _is_gcs(location):
-        if not gcs.exists(location):
-            return {}
-        return json.loads(gcs.download_bytes(location))
+    if location.startswith("gs://"):
+        return json.loads(gcs.download_bytes(location)) if gcs.exists(location) else {}
     path = Path(location)
     return json.loads(path.read_text()) if path.exists() else {}
 
 
 def _write_registry(location: str, registry: dict) -> None:
-    from docpipeline.infra import gcs
-
     data = json.dumps(registry).encode()
-    if _is_gcs(location):
+    if location.startswith("gs://"):
         gcs.upload_bytes(gcs.path_for(location), data, "application/json")
         return
     path = Path(location)
@@ -77,7 +75,7 @@ class MockOcrEngine(OcrEngine):
     registration when the caller doesn't have a doc_id yet."""
 
     def __init__(self, location: str | Path | None = None):
-        self.location = str(location) if location is not None else registry_location()
+        self.location = _resolve(location)
         self._cache: dict | None = None
 
     def _load(self) -> dict:
@@ -99,7 +97,7 @@ class MockOcrEngine(OcrEngine):
 
 def register_mock_ocr_page(doc_id: str, page_no: int, text: str, confidence: float = 0.95,
                             location: str | Path | None = None) -> None:
-    loc = str(location) if location is not None else registry_location()
+    loc = _resolve(location)
     registry = _read_registry(loc)
     registry[f"{doc_id}:{page_no}"] = {"text": text, "confidence": confidence}
     _write_registry(loc, registry)

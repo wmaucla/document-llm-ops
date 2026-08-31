@@ -23,34 +23,26 @@ from __future__ import annotations
 import re
 from importlib import resources
 
-_NAME_RE = re.compile(r"^--\s*name:\s*([a-z_][a-z0-9_]*)\s*$", re.IGNORECASE)
+# A block runs from its `-- name:` marker to the next one (or end of file).
+_BLOCK_RE = re.compile(
+    r"^--\s*name:\s*([a-z_][a-z0-9_]*)\s*$(.*?)(?=^--\s*name:|\Z)",
+    re.IGNORECASE | re.MULTILINE | re.DOTALL,
+)
 
 
 def load_sql(package: str) -> dict[str, str]:
     """Parse a package's sql/*.sql into {NAME: statement}.
 
-    `-- name: foo` opens a block; everything until the next marker belongs to
-    it. Comment lines are kept — they are the explanation of why the statement
-    is shaped the way it is, and psycopg ignores them.
+    Comment lines inside a block are kept — they are the explanation of why the
+    statement is shaped the way it is, and psycopg ignores them.
     """
-    loaded: dict[str, str] = {}
     root = resources.files(package).joinpath("sql")
-    for entry in sorted(root.iterdir(), key=lambda p: p.name):
-        if not entry.name.endswith(".sql"):
-            continue
-        current: str | None = None
-        buf: list[str] = []
-        for line in entry.read_text().splitlines():
-            match = _NAME_RE.match(line.strip())
-            if match:
-                if current:
-                    loaded[current] = "\n".join(buf).strip().rstrip(";")
-                current, buf = match.group(1).upper(), []
-            elif current is not None:
-                buf.append(line)
-        if current:
-            loaded[current] = "\n".join(buf).strip().rstrip(";")
-    return loaded
+    return {
+        name.upper(): body.strip().rstrip(";")
+        for entry in sorted(root.iterdir(), key=lambda e: e.name)
+        if entry.name.endswith(".sql")
+        for name, body in _BLOCK_RE.findall(entry.read_text())
+    }
 
 
 _SQL = load_sql(__package__)
