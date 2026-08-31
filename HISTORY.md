@@ -9,6 +9,57 @@ see [AGENT.md](AGENT.md) instead — this file is the "how we got here," not the
 
 ---
 
+**2026-08-31 (latest) — four bugs in a chain, each hidden by the one before it, ending at a hole in
+the `arithmetic` gate that was silently disabling the funnel's tier escalation.**
+
+Started from a `verify-loop` reporting `8/8 complete` — which turned out not to mean what it said.
+
+*The chain, in the order it unravelled.* Adding `three_page_scan` to the in-cluster fixture set
+(`FIXTURE_LIMIT` 3→4, to get the scatter-gather join covered in k8s at all) made the outcomes split
+cleanly by code path: the only fixture that never touches OCR was the only one completing. The
+assembled text explained it — `'[mock-ocr:crc32c-6fc96:0] unregistered page'`. The mock-OCR registry
+was written by the one-shot fixtures Job into its own container and read by `ocr-shard` from a stale
+copy baked into the image (bug #9). Moving it to GCS fixed that and gave documents real text for the
+first time in k8s.
+
+Real text immediately exposed the next layer: three fixtures failing `arithmetic` with exact sign
+inversions (`computed=800, declared=-800`). An A/B — same model, same documents, prompt the only
+variable — was decisive at 12/12 negative vs 0/12. Shipped it. **The prediction it produced was
+then wrong**: those documents still did not complete. The revision had traded a sign error for
+omission; the model now returned no `total_cents` at all.
+
+Which exposed the actual defect. `arithmetic` guarded its comparison with `total is not None`, so an
+extraction with no total returned **pass**. This is the gate this repo relies on to defeat prompt
+injection, hardened so a model could not evade it by omitting `line_items` — and it let one through
+by omitting the field being checked. `plausibility` does catch it (`total_missing`) and is
+non-blocking. Three documents had reached `complete` and been *posted* carrying no total, on text
+reading `Total: 800.00`. The earlier `8/8 complete` was entirely this.
+
+*The root cause, and why it explains everything upstream.* The hole was short-circuiting the
+two-tier funnel. Measured across 3 prompt wordings × 16 extractions: the cheap tier produces **zero**
+verifiable extractions; the strong tier passes **15/15**. Documents were completing on the cheap tier
+with unusable output instead of escalating to strong — which is precisely what the funnel exists to
+do. Fixing the gate did not break the pipeline, it restored the mechanism. Every document now
+completes on `tier=strong` with a correct total. A separate defect noted along the way — the model
+reading `800.00` as `800` cents, consistently enough that no gate could detect it — was also
+cheap-tier output and resolved itself (`4297.00 → 429700`).
+
+*Two instrument failures of my own, both caught by checking rather than by luck.* The first A/B did
+`if v is None: continue` before counting, so it was structurally blind to the omission failure that
+turned out to matter most — it could only ever have found a sign problem. The second read
+`arithmetic` outcomes out of a pod whose image predated the gate fix, making those numbers
+meaningless until the verdict was recomputed locally. Design the instrument to count every outcome,
+not the one you expect, and check what code the thing under test is actually running.
+
+*Also found, in the run that confirmed all this.* `wait_for_drain` reported `7/7 settled` while an
+8th replayed document was still being ingested. There is never a manifest.json in k8s — same
+cross-pod trap as bug #9 — so every in-cluster drain fell through to a 4s stability window against a
+10s ingest interval. Now a time-based quiet period of two full ingest cycles. Benign in that run,
+but `verify-loop`'s stated purpose is proving replayed documents reach a terminal state, and it
+could pass without having seen all of them.
+
+---
+
 **2026-08-31 (later) — `maxReplicaCount` restored to 3 and the forced-CPU reproduction finally
 run: bug #1's fix has direct evidence for the first time, bug #3's fix validated in both
 directions, and `replay-docs` turns out to reproduce bug #7 on every document.**

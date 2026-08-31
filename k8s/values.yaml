@@ -44,10 +44,9 @@ config:
   REDIS_URL: "redis://redis.default.svc.cluster.local:6379/0"
 
   OCR_ENGINE: "mock"
-  # Must be GCS in-cluster: the fixtures Job writes the mock-OCR registry and
-  # ocr-shard reads it, and they are different pods with different filesystems.
-  # With a local path ocr-shard finds only the stale copy baked into the image
-  # and every OCR document extracts from "unregistered page".
+  # Must be GCS: the fixtures Job writes this and ocr-shard reads it, and they
+  # are different pods. A local path leaves ocr-shard reading the stale copy
+  # baked into the image (AGENT.md bug #9).
   MOCK_OCR_REGISTRY_URI: "gs://docpipeline-local/fixtures/mock_ocr_registry.json"
   OCR_DPI: "150"
 

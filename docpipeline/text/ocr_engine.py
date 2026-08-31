@@ -25,15 +25,9 @@ DEFAULT_REGISTRY_PATH = Path(__file__).resolve().parent.parent.parent / "fixture
 
 
 def registry_location() -> str:
-    """Where the mock-OCR registry lives: a gs:// URI or a local path.
-
-    A local file is fine on the host, where the fixture generator and the OCR
-    workers share a filesystem. In k8s they do not -- fixtures are written by a
-    short-lived Job pod and read by ocr-shard -- so the only registry ocr-shard
-    could see was the stale one baked into the image at build time, and every
-    OCR document extracted from "unregistered page" instead of invoice text.
-    k8s/values.yaml points this at GCS, which every pod already reaches.
-    """
+    """A gs:// URI or a local path. Local is fine only where the fixture
+    generator and the OCR workers share a filesystem; in k8s they are different
+    pods, so values.yaml points this at GCS (AGENT.md bug #9)."""
     return config.MOCK_OCR_REGISTRY_URI or str(DEFAULT_REGISTRY_PATH)
 
 

@@ -292,29 +292,44 @@ stays current-state only.
    `e2e`/`e2e-k8s` is in `ansible_run_tags`; standalone runs print `⏳ IN PROGRESS` and exit 0.
    **If you see `RUN INCOMPLETE`, check timestamps against the extraction log before concluding
    anything is stuck** — this class of false alarm has now cost two separate investigations.
-7. **Fixed 2026-08-31 — the `arithmetic`-gate "false positive" was a prompt defect, and the gate
-   was right every time.** The real small model returned totals with the correct magnitude and an
-   inverted sign (`computed=800, declared=-800`), tripping the gate. Long treated as an
+7. **Fixed 2026-08-31 — the `arithmetic`-gate "false positive" was never a gate bug. The root cause
+   was a hole in that same gate that disabled the funnel's tier escalation.** Long carried as an
    intermittent canary quirk and absorbed rather than fixed.
 
-   It is not intermittent and it was never canary-specific. Once bug #9's fix let OCR documents
-   carry real text, it reproduced on three real fixtures at once, every one an exact negation.
-   Cause confirmed by A/B, same model and documents with the prompt as the only variable:
-   **12/12 extractions negative under the v1 prompt, 0/12 under the revision.** v1 said
-   `total_cents (integer, negative for credit memos)` — it stated when to go negative and never
-   stated the default, and the 1B model applied it universally. The prompt now names the default
-   sign explicitly.
+   The chase, because the order matters: bug #9's fix let OCR documents carry real text, which
+   turned an occasional canary anomaly into three simultaneous reproductions of a sign inversion
+   (`computed=800, declared=-800`). An A/B fixed that (prompt v1 → v3) — and revealed the model
+   instead *omitting* `total_cents`. Chasing that revealed the real defect: `arithmetic` guarded its
+   comparison with `total is not None`, so an extraction with no total returned **pass**. Three
+   documents reached `complete` and were posted carrying no total at all, on text that plainly reads
+   `Total: 800.00`.
 
-   Two things to keep in mind here. `config.PROMPT_VERSION` is bumped to `invoice-extract@v2`
-   alongside the wording — `dlq_replay` re-drives documents whose `prompt_version` changed, so
-   editing a prompt without bumping it makes old and new extractions indistinguishable. And
-   `canary.py`'s `run_canary()` still treats `review` as a pass under `EXTRACTION_MODE=real`; that
-   absorption was a workaround for *this* bug and is now a candidate for removal, but it should
-   only go once a few clean runs confirm the canary reaches `complete` on its own.
+   That hole is why everything else looked confusing. It was short-circuiting the two-tier funnel:
+   documents "completed" on the cheap tier with unusable output instead of escalating. Measured
+   across 3 prompt wordings × 16 extractions, the cheap tier (`llama3.2:1b`) produces **zero**
+   verifiable extractions; the strong tier (`qwen2.5:1.5b`) passes **15/15**. With the gate honest,
+   every document now escalates and completes on `tier=strong` with a correct total.
 
-   **The general lesson:** this sat open for sessions as "the gate is wrong," when the gate was
-   correctly reporting that the model's declared total disagreed with its own line items. A
-   deterministic check disagreeing with a model is evidence about the model first.
+   Fixes: `arithmetic` returns `inconclusive` (which blocks — it is a blocking gate with
+   `ON_INCONCLUSIVE=block`) when the total is missing, so **nothing the model omits can produce a
+   pass**; and prompt v3 marks `total_cents` required. `config.PROMPT_VERSION` is bumped to
+   `invoice-extract@v3` — `dlq_replay` re-drives on `prompt_version`, so a silent prompt edit makes
+   old and new extractions indistinguishable.
+
+   Resolved by the same root cause, having looked like a separate undetectable defect: the model
+   read `800.00` as `800` cents rather than `80000`, consistently across line items, subtotal and
+   total, so no gate could catch it. That was also cheap-tier output. Strong tier converts correctly
+   (`4297.00 → 429700`).
+
+   `canary.py`'s `run_canary()` still treats `review` as a pass under `EXTRACTION_MODE=real`. That
+   absorption existed for this bug and is now removable, but only after a few clean runs confirm the
+   canary reaches `complete` unaided.
+
+   **Two lessons worth keeping.** A deterministic check disagreeing with a model is evidence about
+   the model first — this sat open for sessions as "the gate is wrong" while the gate was right. And
+   an `applies_to` predicate is not the only evasion surface: this gate was carefully hardened so a
+   model could not switch it off by omitting `line_items`, and then let one through by omitting the
+   very field being checked.
 
    **`review` rate is environment-dependent, not a property of the document — established by a
    failed prediction, 2026-08-31.** `local_scripts/replay_docs.py` builds every document with
@@ -365,6 +380,20 @@ stays current-state only.
    **Lesson worth keeping:** "self-consistent, so nothing breaks" is a statement about one
    deployment topology. Any file written by one process and read by another is a shared-storage
    question the moment those processes stop sharing a filesystem.
+10. **Fixed 2026-08-31 (not yet validated live) — `wait_for_drain` could declare victory before all
+    documents were ingested.** It counts what is *in the ledger now*, so a document the orphan
+    detector has not yet discovered is invisible to it. The manifest.json target guards this, but
+    **there is never a manifest in k8s** — the fixtures Job writes it into its own container, the
+    same cross-pod trap as bug #9 — so every in-cluster drain fell through to the "total unchanged
+    across two consecutive polls" fallback. At `poll_seconds=2.0` that is a 4s window against a 10s
+    `ORPHAN_DETECTOR_INTERVAL_SECONDS`, so a document could be discovered *after* the check passed.
+    Confirmed live: a replay drain reported `7/7 settled` while an 8th document was still being
+    ingested (it completed a moment later, so the run was fine — the *check* was not).
+
+    The fallback is now a time-based quiet period of two full ingest cycles rather than a count of
+    polls, derived from `ORPHAN_DETECTOR_INTERVAL_SECONDS` so it tracks that value. This matters
+    beyond replay: proving replayed documents reach a terminal state is `verify-loop`'s whole
+    purpose, and it could previously pass without having looked at all of them.
 
 ## What this repo is
 

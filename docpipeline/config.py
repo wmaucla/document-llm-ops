@@ -90,11 +90,10 @@ REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6380/0")
 # --- OCR ---
 OCR_ENGINE = os.environ.get("OCR_ENGINE", "mock")  # mock | tesseract
 OCR_DPI = _int("OCR_DPI", 150)
-# Where the mock-OCR registry lives: a gs:// URI, or empty for the local file.
-# Must be shared storage anywhere the fixture generator and the OCR workers are
-# different processes on different filesystems -- in k8s they are (a one-shot
-# Job writes it, ocr-shard reads it), and a local path silently degrades every
-# OCR document to "unregistered page". k8s/values.yaml sets the gs:// form.
+# Mock-OCR registry: a gs:// URI, or empty for the local file. Must be shared
+# storage wherever the fixture generator and OCR workers are different pods --
+# in k8s they are, and a local path silently degrades every OCR document to
+# "unregistered page" (AGENT.md bug #9).
 MOCK_OCR_REGISTRY_URI = os.environ.get("MOCK_OCR_REGISTRY_URI", "")
 
 # --- Scaled-down limits (prod counterparts in the trailing comments) ---
@@ -116,13 +115,10 @@ MAX_REPAIR_ATTEMPTS = _int("MAX_REPAIR_ATTEMPTS", 2)
 FUNNEL_VERSION = _int("FUNNEL_VERSION", 1)
 GATE_SET_VERSION = _int("GATE_SET_VERSION", 1)
 BUILD_SHA = os.environ.get("BUILD_SHA", "local-dev")
-# v3 (2026-08-31): total_cents is marked required, with the credit-memo rule
-# kept short. v1 said only "negative for credit memos" and the 1B model applied
-# it universally (sign-flipped totals); v2 stated the default sign but was long
-# and conditional, and the model responded by omitting the field entirely.
-# Measured on the cheap tier, 16 extractions each: v1 0 usable, v2 0, v3 8.
-# Bump this on every prompt change -- dlq_replay re-drives documents whose
-# prompt_version moved, so a silent edit makes old and new indistinguishable.
+# Bump on every prompt change: dlq_replay re-drives documents whose
+# prompt_version moved, so a silent edit makes old and new extractions
+# indistinguishable. v3 marks total_cents required -- earlier wordings produced
+# sign-flipped totals, then omitted ones (AGENT.md bug #7).
 PROMPT_VERSION = os.environ.get("PROMPT_VERSION", "invoice-extract@v3")
 
 PLAUSIBLE_TOTAL_CEILING_CENTS = _int("PLAUSIBLE_TOTAL_CEILING_CENTS", 10_000_000_00)

@@ -351,14 +351,10 @@
       changed_when: false
       tags: [keda-install, e2e-k8s]
 
-    # The operator being Available does not mean its CRDs are usable yet, and
-    # more to the point does not mean *ArgoCD* knows about them: ArgoCD caches
-    # the cluster's API resource list, so a just-installed CRD stays invisible
-    # to a sync until that cache refreshes. Confirmed live 2026-08-31 — the
-    # docpipeline sync failed with `no matches for kind "ScaledObject" ... ensure
-    # CRDs are installed first` 32 seconds *after* the CRDs were created. The
-    # race had silently won on every prior run. Waiting for `established` closes
-    # the CRD half; the sync task below retries for the discovery-cache half.
+    # Operator Available != CRDs usable, and neither means ArgoCD knows about
+    # them -- it caches the cluster's API resource list, so a new CRD is
+    # invisible to a sync until that refreshes. This closes the CRD half; the
+    # sync below retries for the discovery-cache half.
     - name: Wait for KEDA's CRDs to be established
       ansible.builtin.command:
         cmd: "kubectl wait --for=condition=established crd/scaledobjects.keda.sh crd/scaledjobs.keda.sh --timeout=90s"
@@ -370,13 +366,9 @@
     # flat apply, so it needs real margin instead of the CLI's default of
     # waiting indefinitely (a stuck wave would otherwise hang this task, and
     # the whole play, forever with no failure signal).
-    # Retried because of ArgoCD's stale API-discovery cache (see the CRD wait
-    # above): the first sync after a fresh KEDA install can fail with "no
-    # matches for kind ScaledObject" even though the CRDs exist. That is
-    # transient and clears on its own within seconds, so retry rather than
-    # fail the run. Any *other* sync failure is real and still fails after the
-    # attempts are exhausted -- this widens the window, it does not swallow
-    # errors.
+    # Retries the transient "no matches for kind ScaledObject" a fresh KEDA
+    # install can produce (see the CRD wait above). Bounded on purpose: any
+    # other sync failure still fails the run once attempts are exhausted.
     - name: Sync the docpipeline Application from the local k8s/ tree
       ansible.builtin.command:
         cmd: "argocd app sync docpipeline --core --local {{ repo_root }}/k8s --timeout 480"

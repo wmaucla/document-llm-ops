@@ -3,8 +3,12 @@
 Four outcomes: pass / fail / inconclusive / not_applicable. `applies_to`
 predicates only ever look at attributes known *before* extraction (here:
 `doc.doc_type`, set at triage time from a keyword heuristic) — never the
-model's own output, which is what makes arithmetic un-evadable by a model
-that simply omits line items.
+model's own output, so a model cannot switch a gate off.
+
+That is necessary but not sufficient: a gate must also never *pass* on
+missing input, or omitting the checked field evades it just as effectively as
+switching it off. Arithmetic did exactly that until 2026-08-31 (AGENT.md
+bug #7).
 """
 
 from __future__ import annotations
@@ -65,14 +69,10 @@ def arithmetic(doc: dict, fields: dict) -> GateResult:
     cannot switch this off by omitting line_items (see 'applies_to must not
     be evadable').
 
-    Nothing the model omits may produce a `pass`. This gate exists to check a
-    declared total against independently computed line items, so any missing
-    input means "not verified", never "verified fine" -- and since arithmetic
-    is blocking with ON_INCONCLUSIVE=block, inconclusive routes to review.
-    Confirmed live 2026-08-31: `total is not None` used to short-circuit to
-    pass, so a model that simply omitted total_cents walked through the one
-    gate this repo relies on to defeat prompt injection, and three documents
-    reached `complete` -- and were posted -- carrying no total at all.
+    Nothing the model omits may produce a `pass`: this checks a declared total
+    against independently computed line items, so a missing input means "not
+    verified", never "verified fine". Omitting total_cents used to walk
+    straight through (AGENT.md bug #7).
     """
     if doc.get("doc_type") != "invoice":
         return GateResult("not_applicable")

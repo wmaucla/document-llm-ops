@@ -9,8 +9,17 @@ detector (the local ingest path) only scans every
 ORPHAN_DETECTOR_INTERVAL_SECONDS; snapshotting "whatever's in the table so
 far" as the target lets this script declare victory after only the first
 few objects have even been triaged, while the rest are still waiting to be
-discovered. Falls back to requiring the observed total to be stable across
-two consecutive polls when there's no manifest to read.
+discovered.
+
+Without a manifest the fallback is a *time-based* quiet period, not a count
+of polls. In k8s there is never a manifest -- it is written by the one-shot
+fixtures Job into its own container, so the pod running this has no copy --
+so this fallback is the only thing guarding every in-cluster drain. Two
+consecutive polls used to be enough, which at 2s each is a 4s window against
+a 10s ingest interval: a document could be discovered *after* the check
+declared victory. Confirmed live 2026-08-31, a replay drain reported "7/7
+settled" while an 8th document had not yet been ingested. The total must now
+hold steady for longer than one full ingest cycle before it counts as drained.
 """
 import json
 import sys
@@ -19,10 +28,14 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from docpipeline import config
 from docpipeline.core import ledger
 
 TERMINAL = ("complete", "review", "failed")
 MANIFEST_PATH = Path(__file__).resolve().parent.parent / "fixtures" / "generated" / "manifest.json"
+# Two full ingest cycles: one to catch a document already in flight, one of
+# genuine quiet. Derived rather than a literal so it tracks the poll interval.
+QUIET_SECONDS = config.ORPHAN_DETECTOR_INTERVAL_SECONDS * 2
 
 
 def expected_count() -> int | None:
@@ -36,6 +49,7 @@ def main(timeout_seconds: int = 120, poll_seconds: float = 2.0) -> int:
     started = time.monotonic()
     target = expected_count()
     last_total = None
+    last_change_at = time.monotonic()
     total = done = 0
     effective_target: int | None = target
 
@@ -50,9 +64,17 @@ def main(timeout_seconds: int = 120, poll_seconds: float = 2.0) -> int:
                 cur.execute("SELECT count(*) AS n FROM documents WHERE state = ANY(%s)", (list(TERMINAL),))
                 done = cur.fetchone()["n"]
 
+            if total != last_total:
+                last_change_at = time.monotonic()
+            quiet_for = time.monotonic() - last_change_at
+
             effective_target = target if target is not None else total
-            stable = target is not None or total == last_total
-            print(f"{done}/{total} terminal (target={effective_target}, stable={stable}) "
+            # A manifest is authoritative about how many documents to expect;
+            # without one, only a quiet period longer than an ingest cycle
+            # tells us no more are still on their way in.
+            stable = target is not None or quiet_for >= QUIET_SECONDS
+            print(f"{done}/{total} terminal (target={effective_target}, "
+                  f"quiet={quiet_for:.0f}s/{QUIET_SECONDS}s, stable={stable}) "
                   f"({time.monotonic() - started:.0f}s elapsed)")
 
             if total == 0:
