@@ -16,8 +16,9 @@ model, not mocks.
 ledger, text production with OCR fan-out and scatter-gather join, extraction with five quality
 gates and the outbox, and an async reconciliation strip](docs/architecture.png)
 
-Three terminal states, but only `complete` is truly final — `review` and `failed` are parking
-states that are legal to leave, and the question is whether anything ever does:
+Documents move through four in-flight states and settle in one of three. Only `complete` is truly
+final; `review` and `failed` are parking states that are legal to leave, and the question is
+whether anything ever does:
 
 ![Document end states: complete is absorbing and posts downstream; review is entered by triage
 rejects, exhausted gates, duplicate detection or the kill switch, and nothing automatic ever leaves
