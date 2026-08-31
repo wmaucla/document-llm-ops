@@ -44,7 +44,7 @@ def find_and_enqueue_orphans(cur, prefix: str = INBOX_PREFIX) -> int:
     cur.execute(
         """
         SELECT DISTINCT doc_id FROM outbox
-         WHERE topic = 'triage.requests' AND published_at IS NULL AND doc_id = ANY(%s)
+         WHERE topic = 'triage.requests' AND doc_id = ANY(%s)
         """,
         ([o[0] for o in orphans],),
     )

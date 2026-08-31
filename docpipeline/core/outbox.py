@@ -25,10 +25,12 @@ class DeliveryFailed(Exception):
 
 def relay_once(conn, producer, batch_cap: int = config.RELAY_BATCH_CAP) -> int:
     with conn.cursor() as cur:
+        # No `published_at IS NULL` filter: a row's *existence* is its pending
+        # state now (see the delete-on-ack note below), so every row here is
+        # unpublished by construction.
         cur.execute(
             """
             SELECT id, doc_id, topic, payload, headers FROM outbox
-             WHERE published_at IS NULL
              ORDER BY id
              LIMIT %s
              FOR UPDATE SKIP LOCKED
@@ -73,11 +75,23 @@ def relay_once(conn, producer, batch_cap: int = config.RELAY_BATCH_CAP) -> int:
                 f"{len(failures)} delivery error(s): {failures[:3]}"
             )
 
+        # Delete on ack, rather than marking published and keeping the row.
+        # The outbox is a queue, not a record: once the broker has the message
+        # the row duplicates what is already in documents/posted_documents, and
+        # nothing ever read published_at as a *timestamp* — every consumer of it
+        # asked only "is this pending", which "does the row exist" answers more
+        # directly. Postgres makes the choice lopsided: an UPDATE already writes
+        # a dead tuple, so marking-published cost one dead tuple *and* retained
+        # the live row forever, where deleting costs the same dead tuple and
+        # retains nothing. The table now converges to the size of the backlog
+        # instead of growing without bound, which removes the need for any
+        # retention job or time-partitioning on it at all.
+        #
+        # Safety is unchanged: this sits exactly where the UPDATE did, after
+        # flush() confirmed delivery and inside the same transaction, so a
+        # broker failure still rolls back and the rows stay queued.
         ids = [r["id"] for r in rows]
-        cur.execute(
-            "UPDATE outbox SET published_at = now(), attempts = attempts + 1 WHERE id = ANY(%s)",
-            (ids,),
-        )
+        cur.execute("DELETE FROM outbox WHERE id = ANY(%s)", (ids,))
         conn.commit()
     return len(rows)
 
@@ -87,8 +101,7 @@ def oldest_pending_age_seconds(conn) -> float | None:
     A dead relay stalls the whole pipeline while every other dashboard stays green."""
     with conn.cursor() as cur:
         cur.execute(
-            "SELECT extract(epoch from (now() - min(created_at))) AS age "
-            "FROM outbox WHERE published_at IS NULL"
+            "SELECT extract(epoch from (now() - min(created_at))) AS age FROM outbox"
         )
         row = cur.fetchone()
         return row["age"] if row and row["age"] is not None else None

@@ -1,11 +1,10 @@
-"""Retention safety. The dangerous property here is not "does it delete" but
-"does it ever delete something undelivered" — an unpublished outbox row is a
-message that has not reached Kafka, and deleting one is exactly the loss the
-outbox pattern exists to prevent."""
+"""Retention safety for attempt_log.
+
+The outbox is no longer pruned at all — the relay deletes each row on delivery
+ack, so the table is bounded by the backlog. See tests/test_relay_delivery.py
+for the property that matters there: an unacknowledged row must survive."""
 
 from __future__ import annotations
-
-import datetime
 
 import pytest
 
@@ -36,65 +35,60 @@ def _isolated_outbox():
     _truncate()
 
 
-def _outbox_row(cur, doc_id: str, *, published_days_ago: int | None) -> int:
-    """Insert one outbox row. published_days_ago=None leaves it pending."""
-    published = (
-        None if published_days_ago is None
-        else datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=published_days_ago)
-    )
+def _attempt(cur, doc_id: str, *, days_ago: int | None) -> int:
+    """Insert one attempt_log row. days_ago=None leaves both timestamps NULL,
+    which is the case the id-watermark approach exists for."""
+    ts = None if days_ago is None else f"now() - interval '{days_ago} days'"
     cur.execute(
-        "INSERT INTO outbox (doc_id, topic, payload, published_at) "
-        "VALUES (%s, %s, %s, %s) RETURNING id",
-        (doc_id, "document.extracted", ledger.Json({"doc_id": doc_id}), published),
+        f"INSERT INTO attempt_log (doc_id, stage, attempt_no, ended_at) "
+        f"VALUES (%s, 'extraction', 1, {ts or 'NULL'}) RETURNING id",
+        (doc_id,),
     )
     return cur.fetchone()["id"]
 
 
-def test_prune_never_deletes_an_unpublished_row_however_old(conn, doc_id):
-    """The load-bearing safety property. A pending row can be arbitrarily old —
-    broker down, delivery failing, retries backing off — and age must never be
-    grounds for deleting it."""
+def test_prune_removes_old_attempt_log_rows(conn, doc_id):
     with conn.cursor() as cur:
-        pending_id = _outbox_row(cur, doc_id, published_days_ago=None)
-        # Backdate its creation so a created_at-based predicate WOULD catch it.
-        cur.execute("UPDATE outbox SET created_at = now() - interval '999 days' WHERE id = %s",
-                    (pending_id,))
+        old_id = _attempt(cur, doc_id, days_ago=90)
+        fresh_id = _attempt(cur, doc_id, days_ago=0)
     conn.commit()
 
-    prune.run(outbox_days=1, attempt_log_days=1)
+    result = prune.run(attempt_log_days=30)
+    assert result["attempt_log_removed"] >= 1
 
     with conn.cursor() as cur:
-        cur.execute("SELECT published_at FROM outbox WHERE id = %s", (pending_id,))
-        row = cur.fetchone()
-    assert row is not None, "prune deleted an UNPUBLISHED outbox row — that is message loss"
-    assert row["published_at"] is None
-
-
-def test_prune_removes_published_rows_past_the_window(conn, doc_id):
-    with conn.cursor() as cur:
-        old_id = _outbox_row(cur, doc_id, published_days_ago=30)
-        fresh_id = _outbox_row(cur, doc_id, published_days_ago=0)
-    conn.commit()
-
-    result = prune.run(outbox_days=7, attempt_log_days=9999)
-    assert result["outbox_removed"] >= 1
-
-    with conn.cursor() as cur:
-        cur.execute("SELECT id FROM outbox WHERE id = ANY(%s)", ([old_id, fresh_id],))
+        cur.execute("SELECT id FROM attempt_log WHERE id = ANY(%s)", ([old_id, fresh_id],))
         surviving = {r["id"] for r in cur.fetchall()}
-    assert old_id not in surviving, "a published row past the window should be gone"
-    assert fresh_id in surviving, "a recently published row is still within the window"
+    assert old_id not in surviving
+    assert fresh_id in surviving
+
+
+def test_undated_rows_are_swept_by_position_not_left_forever(conn, doc_id):
+    """started_at/ended_at are optional, so a time predicate would skip undated
+    rows permanently. The id watermark sweeps them by insert position."""
+    with conn.cursor() as cur:
+        undated_id = _attempt(cur, doc_id, days_ago=None)   # inserted first = older
+        old_id = _attempt(cur, doc_id, days_ago=90)         # datable, sets the watermark
+    conn.commit()
+
+    prune.run(attempt_log_days=30)
+
+    with conn.cursor() as cur:
+        cur.execute("SELECT id FROM attempt_log WHERE id = ANY(%s)", ([undated_id, old_id],))
+        surviving = {r["id"] for r in cur.fetchall()}
+    assert old_id not in surviving
+    assert undated_id not in surviving, "an undated row below the watermark must be swept too"
 
 
 def test_dry_run_reports_without_deleting(conn, doc_id):
     with conn.cursor() as cur:
-        old_id = _outbox_row(cur, doc_id, published_days_ago=30)
+        old_id = _attempt(cur, doc_id, days_ago=90)
     conn.commit()
 
-    result = prune.run(outbox_days=7, attempt_log_days=9999, dry_run=True)
+    result = prune.run(attempt_log_days=30, dry_run=True)
     assert result["dry_run"] is True
-    assert result["outbox_removed"] >= 1  # counted, not deleted
+    assert result["attempt_log_removed"] >= 1
 
     with conn.cursor() as cur:
-        cur.execute("SELECT id FROM outbox WHERE id = %s", (old_id,))
+        cur.execute("SELECT id FROM attempt_log WHERE id = %s", (old_id,))
         assert cur.fetchone() is not None, "dry run must not delete"

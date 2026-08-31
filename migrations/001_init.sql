@@ -103,12 +103,17 @@ CREATE TABLE IF NOT EXISTS outbox (
   payload       jsonb NOT NULL,
   headers       jsonb,
   created_at    timestamptz NOT NULL DEFAULT now(),
-  published_at  timestamptz,             -- NULL = pending
-  attempts      int NOT NULL DEFAULT 0
+  -- Retained for compatibility; unused since the relay switched to delete-on-
+  -- ack. A row's *existence* is its pending state -- the relay deletes it once
+  -- the broker has acknowledged the message, so the table is bounded by the
+  -- backlog rather than growing forever. Nothing ever read published_at as a
+  -- timestamp; every reader only asked "is this pending".
+  published_at  timestamptz,
+  attempts      int NOT NULL DEFAULT 0   -- >0 on a surviving row = failed delivery
 );
 
--- Bounded by backlog, not history.
-CREATE INDEX IF NOT EXISTS outbox_pending_idx ON outbox (id) WHERE published_at IS NULL;
+-- Bounded by backlog, not history -- now structurally, not just by predicate.
+CREATE INDEX IF NOT EXISTS outbox_pending_idx ON outbox (id);
 
 -- ============================================================================
 -- attempt_log — append-only diagnostic history. Not used in control-flow
