@@ -793,3 +793,292 @@ fully ArgoCD-driven, and a new stuck-extraction-doc bug was found (not yet root-
 **Environment note:** docker daemon was found stopped at the start of this session (needed
 `sudo systemctl start docker` — the agent cannot do this itself, no interactive sudo). Check it's
 running before assuming any infra command failure is a code/config bug.
+
+---
+
+# Closed bug register
+
+Moved here from AGENT.md on 2026-09-01, verbatim. These were carried in AGENT.md
+long after they were fixed, which made a current-state file read as a bug list.
+They are kept in full because the *reasoning* in several of them is the only
+record of why a plausible-looking change would reintroduce the bug.
+
+AGENT.md keeps the numbering as an index and keeps the still-active constraints
+these produced (see its "Standing constraints" section); everything below is the
+investigation itself. Numbers are cited from code (`config.py` cites bug #3), so
+they are never reused or renumbered.
+
+2. **Ollama silently falls back to CPU — root-caused as *two* problems, both fixed from this
+   repo's side. Live-validated 2026-08-30 on a clean `make e2e-k8s`: `failed=0`, GPU gate passed,
+   `✅ RUN COMPLETE 4/4`, extraction `RESTARTS 0`.** The original framing
+   ("GPU-registration race on cluster rebuild") was only half of it, and guarded only the half
+   that happens at bring-up.
+
+   **(a) The GPU gets *released*, repeatedly — this is why it kept coming back.** Ollama's
+   `OLLAMA_KEEP_ALIVE` defaults to **5 minutes**; an idle model unloads and its `llama-server`
+   subprocess exits. The next request re-spawns it and **re-runs `ggml_cuda_init`** — so every
+   idle gap is a fresh chance to land on CPU, and this pipeline is mostly idle gaps
+   (`FIXTURE_LIMIT=4` plus a canary). Confirmed live: `kubectl describe pod -l app=ollama` showed
+   `Environment: <none>`, i.e. the default was never overridden. This is what explains a pod that
+   passed the deploy-time warm check being on CPU twenty minutes later *without ever restarting* —
+   previously read as "the bring-up race recurring," which it isn't. Tier escalation compounds it:
+   the funnel uses two models (`cheap-fast`→`llama3.2:1b`, `cheap-balanced`→`qwen2.5:1.5b`) and
+   only the cheap one was ever warmed, so a strong-tier escalation cold-loaded its model for the
+   first time *mid-pipeline*, unwarmed and unverified.
+
+   **(b) The container was memory-starved.** Ollama's own loader logged `disabling mmap for
+   llama-server load due to host memory pressure` with `system_free="768.2 MiB"
+   system_total="4.0 GiB"` — the 4Gi cgroup limit, not VRAM. The `CUDA_Host` pinned buffers count
+   against the cgroup even though the tensors live in VRAM. Not a VRAM shortage at all: the
+   2080 Ti has 10.6 GiB and both models need ~2.8 GiB of it.
+
+   **What makes this hard to see:** the failure mode is *degradation, not failure*. Ollama stays
+   `Running`/`Ready` and keeps answering, just at 150-450s/call instead of 0.079s. Its own
+   liveness probe is an HTTP GET that passes fine on CPU. Downstream this looks exactly like
+   extraction hanging (**this is the suspected trigger for bug #1** — CPU-fallback latency against
+   a 300s liveness probe), not like a GPU problem.
+
+   **Fixes, all in this repo — `mlops-llm-repo`'s `ollama.yaml` is deliberately not edited:**
+   - `ansible/site.yml` patches the live Deployment after the sibling's terraform applies it:
+     `kubectl set env OLLAMA_KEEP_ALIVE=-1 OLLAMA_MAX_LOADED_MODELS=2` and
+     `kubectl set resources --limits=memory=8Gi`. That alone collapses N `ggml_cuda_init` rolls
+     into one per pod lifetime. It then warms **both** tiers' models, not just the cheap one.
+   - `docpipeline/reconciliation/gpu_watchdog.py` + its `gpu-watchdog` Deployment
+     (`k8s/values.yaml`, RBAC in `k8s/templates/rbac.yaml`) enforce both invariants *continuously*
+     — polling `/api/ps` every 30s, re-pinning a model that unloaded, and deleting the ollama pod
+     when a model comes back CPU-resident (`size_vram == 0`), rate-limited by a 300s cooldown so a
+     genuinely GPU-less host degrades to periodic restarts rather than a thrash loop. This is the
+     "otherwise let the pod churn" half, automated.
+   - `site.yml`'s deploy-time gate now execs `gpu_watchdog --check-once` in that same pod, so the
+     gate and the continuous enforcement run identical code and cannot disagree.
+
+   **`/api/ps`'s `size_vram` is the signal to use** — not `nvidia-smi` (a pod can pass it and
+   still fail at inference, confirmed live) and not log-grepping. Two practical notes for anyone
+   touching this: the ollama image ships **no `curl` or `wget`** (confirmed live:
+   `exec: "curl": executable file not found in $PATH`), so anything HTTP against it must run from
+   another pod; and the previous deploy-time check was a **no-op that never once fired** — it ran
+   `kubectl logs --tail=50 | grep -qv "ggml_cuda_init: failed" || exit 1`, but `grep -qv PAT`
+   succeeds whenever *any* line fails to match, which across 50 lines is always true. Treat any
+   past run that "passed" that check as unverified. Asserting absence needs `! grep -q PAT`.
+
+   Manual fix if something still slips through: `kubectl delete pod -l app=ollama`.
+
+   **Standing constraint — never enable auto-sync on `mlops-llm-serving`.** Because `site.yml`
+   patches the live ollama Deployment while deliberately leaving the sibling repo's manifest
+   alone, that Application sits permanently `OutOfSync` (`Healthy`). The drift *is* the fix.
+   Neither Application currently sets `syncPolicy.automated`, so nothing reverts it — but turning
+   on auto-sync or selfHeal there would silently roll back `OLLAMA_KEEP_ALIVE=-1`,
+   `OLLAMA_MAX_LOADED_MODELS=2`, and the 8Gi limit, reintroducing this bug whole. The
+   `gpu-watchdog` would catch the resulting CPU fallback; nothing continuously checks the memory
+   limit, so the 4Gi starvation half would come back unobserved. If you ever want that
+   Application auto-synced, the patches have to move into the sibling repo's manifest first.
+
+   **Validation run, 2026-08-30 (full teardown/rebuild, `ok=25 changed=11 failed=0
+   unreachable=0`):** the `Recreate` rollout after `kubectl set env`/`set resources` settled
+   without the single-GPU deadlock; both models warmed; the residency gate passed on its first
+   attempt (no heal needed); canary passed; `✅ RUN COMPLETE — 4/4 documents settled`
+   (`complete=2 review=2`, `posted_documents: 2`). The two `review` outcomes are bug #6, not this.
+   The new chart objects (ServiceAccount/Role/RoleBinding + a 9th Deployment) synced through
+   ArgoCD cleanly, and the watchdog has been polling `/api/ps` every 30s with `200 OK` since.
+
+   **Read this result carefully — it does not clear bugs #1 and #3.** A warm GPU call is 0.079s,
+   so extraction finishes far inside both the sweeper's 30s stuck threshold and the probe's 300s
+   staleness window; neither bug *can* fire while the GPU is healthy. Confirmed in this run:
+   extraction stayed at `RESTARTS 0` and the sweeper logged no `reconciler_stuck_docs_found` at
+   all. That is the GPU fix working and **masking** the other two, not evidence they're fixed —
+   both return the moment inference goes slow again.
+
+   **Confirmed live, 2026-08-30: the race isn't only a startup-time thing — GPU access can also
+   break *mid-session*, after the self-heal check already passed.** During a long `make e2e-k8s` run
+   (extraction working through a real backlog for 15+ minutes), `ollama ps` started reporting both
+   loaded models at `100% CPU` and `nvidia-smi` inside the pod started failing with the same `NVML`
+   error — despite Ollama's own startup logs showing a clean GPU load minutes earlier
+   (`offloaded 17/17 layers to GPU`). Per-call latency matched documented CPU-fallback speed
+   (60-187s/call) instead of the documented warm-GPU baseline (~0.079s). The existing self-heal
+   check only runs once, right after cluster bring-up, before real traffic starts — it has no
+   coverage for degradation later in a session. `kubectl delete pod -l app=ollama` fixed it again
+   live. **This is exactly what the `gpu-watchdog` Deployment now covers** — it polls `/api/ps`
+   every 30s for the pod's whole lifetime and deletes it on `size_vram == 0`, so mid-session
+   degradation is detected and healed without anyone watching latency. It also independently
+   confirms the mechanism above: a mid-session drop back to CPU is what you would expect from the
+   5-minute idle unload re-running `ggml_cuda_init`, which `OLLAMA_KEEP_ALIVE=-1` now prevents from
+   happening at all. Between the two, the one-shot startup check is no longer the only line of
+   defence.
+3. **Fixed 2026-08-30 — the four timeouts sized for the same operation now derive from one
+   constant.** `config.EXTRACTION_BUDGET_SECONDS` = `EXTRACTION_TIER_COUNT * (MAX_REPAIR_ATTEMPTS
+   + 1) * LITELLM_TIMEOUT_SECONDS` = **1200s** at the defaults: what one `ocr.completed` message
+   may legitimately take, worst case. Two of the four numbers were simply wrong:
+   - `STUCK_THRESHOLD_SECONDS` was **30s** while `sweeper._claim_batch` selected on all of
+     `IN_FLIGHT_STATES` including `extract_running` — so the sweeper claimed documents that were
+     *being processed successfully*, burned their `extract_attempts`, kicked them back to
+     `extract_pending`, and re-enqueued `ocr.completed`. A slow document exhausted all 5 attempts
+     in ~2.5 minutes and landed in `failed` while the original worker went on to succeed; lag grew
+     while work was being done (reading exactly like a stalled consumer); and the duplicate work
+     piled onto the single Ollama pod, making the next redrive more likely — a positive feedback
+     loop. Correctness held throughout (first-writer-wins + `IllegalTransition`); throughput and
+     the attempt budget did not. Now split per stage: `STUCK_THRESHOLD_SECONDS` (30s) still covers
+     text production, which is fast in every mode, while `EXTRACT_STUCK_THRESHOLD_SECONDS` covers
+     `extract_*` and is budget-derived (1500s) under `EXTRACTION_MODE=real`, falling back to 30s in
+     deterministic mode so the host loop and the test suite are unchanged.
+   - `KAFKA_MAX_POLL_INTERVAL_MS` was **900s**, with a comment claiming it "covers two tiers plus
+     repair retries at 200 each" — that arithmetic is 1200, so the value was *below* the budget it
+     claimed to cover and a worst-case document would have been kicked from the group mid-process.
+     Now derived: 1500s.
+
+   The extraction `livenessProbe` is the deliberate exception and stays tight at 300s, because
+   `extraction_4.run_funnel` now touches the heartbeat *before* each model call as well as after
+   (see bug #1) — staleness tracks one bounded call, not the whole message budget.
+
+   **Do not split `EXTRACT_STUCK_THRESHOLD_SECONDS` by state — measured and settled 2026-08-31.**
+   `_claim_batch` applies one threshold to both `extract_pending` and `extract_running`. It is
+   tempting to shorten it for `_pending` on the reasoning that nobody holds such a document, since
+   during the forced-CPU run 5 of them waited the full 1500s for redrive. **That reasoning is
+   wrong**, and the change would reintroduce this very bug on the `_pending` side.
+
+   Measured directly under a 10-document forced-CPU backlog — sampling `extract_pending` counts
+   and `rpk group describe extraction`'s TOTAL-LAG together — three consecutive stable samples:
+
+       extract_pending=6  extract_running=3  ocr.completed TOTAL-LAG=9
+
+   `lag == pending + running`, exactly. The pending documents' messages are **sitting in the topic,
+   unconsumed** — they are queued behind slow inference, waiting for a free worker, not stranded.
+   (The `_running` three still count toward lag because extraction commits the offset only after
+   processing.) Nothing is lost, so there is nothing for a faster redrive to rescue: shortening the
+   threshold would just republish duplicates of healthy queued work every sweeper cycle — the same
+   theft-of-live-work this bug's fix removed, relocated from `_running` to `_pending`.
+
+   The 1500s wait is therefore the system correctly declining to interfere with a deep queue, not a
+   regression in time-to-recovery. **If you ever revisit this, the trigger is `lag ≈ 0` while
+   documents sit in `extract_pending`** — that would mean messages genuinely went missing, and only
+   then does a per-state split make sense. To re-check, sample both together under bug #1's
+   forced-CPU recipe; discard any sample taken while the group is rebalancing, because `rpk`
+   reports lag 0 there and that is indistinguishable from a drained topic.
+4. **Fixed 2026-08-30 — the outbox relay no longer marks undelivered messages as published.**
+   `relay_once` discarded `producer.flush()`'s return value; `flush()` reports how many messages
+   are *still queued*, so on a slow or partitioned broker the `UPDATE outbox SET published_at`
+   ran anyway and those messages were lost — silently, in the one component whose entire job is
+   not losing them. `kafka_utils.publish()` now takes an `on_delivery` callback, and `relay_once`
+   raises `outbox.DeliveryFailed` and rolls back if `flush()` reports anything unflushed or any
+   delivery errored. Rows stay pending and the next tick retries; already-delivered messages get
+   redelivered, which is correct — every consumer here is idempotent by construction, so
+   at-least-once is the contract and at-most-once never was. Covered by
+   `tests/test_relay_delivery.py`.
+5. **Fixed 2026-08-30 — a `failed` document now says why.** `sweeper._claim_batch` transitioned
+   attempt-capped documents straight to `failed` without setting `last_error`, so the column was
+   empty for every document the sweeper gave up on — which is why "empty `last_error`" recurs in
+   this file's evidence trails explaining nothing, and was once mistaken for a signal about *how* a
+   document died. Now writes the state and attempt count via the new `ledger.set_last_error`.
+6. **Fixed 2026-08-30 — `make summary`/`make summary-k8s` no longer fail on a healthy live
+   pipeline.** `summarize.py` exits 1 on anything in-flight, which is right at the end of an e2e
+   run and wrong as a standalone progress report — and the drain-wait that makes it safe is tagged
+   `[e2e-k8s, replay-wait]`, so a bare `summary-k8s` never ran it. Confirmed live: a standalone
+   `summary-k8s` failed the play on two documents that reached `complete` 4 and 8 seconds later,
+   with extraction at `RESTARTS 0`, the sweeper idle, and LLM calls completing in 2.7-3.3s. The
+   hard gate is now opt-in behind `--require-settled`, which `site.yml` passes only when
+   `e2e`/`e2e-k8s` is in `ansible_run_tags`; standalone runs print `⏳ IN PROGRESS` and exit 0.
+   **If you see `RUN INCOMPLETE`, check timestamps against the extraction log before concluding
+   anything is stuck** — this class of false alarm has now cost two separate investigations.
+7. **Fixed 2026-08-31 — the `arithmetic`-gate "false positive" was never a gate bug. The root cause
+   was a hole in that same gate that disabled the funnel's tier escalation.** Long carried as an
+   intermittent canary quirk and absorbed rather than fixed.
+
+   The chase, because the order matters: bug #9's fix let OCR documents carry real text, which
+   turned an occasional canary anomaly into three simultaneous reproductions of a sign inversion
+   (`computed=800, declared=-800`). An A/B fixed that (prompt v1 → v3) — and revealed the model
+   instead *omitting* `total_cents`. Chasing that revealed the real defect: `arithmetic` guarded its
+   comparison with `total is not None`, so an extraction with no total returned **pass**. Three
+   documents reached `complete` and were posted carrying no total at all, on text that plainly reads
+   `Total: 800.00`.
+
+   That hole is why everything else looked confusing. It was short-circuiting the two-tier funnel:
+   documents "completed" on the cheap tier with unusable output instead of escalating. Measured
+   across 3 prompt wordings × 16 extractions, the cheap tier (`llama3.2:1b`) produces **zero**
+   verifiable extractions; the strong tier (`qwen2.5:1.5b`) passes **15/15**. With the gate honest,
+   every document now escalates and completes on `tier=strong` with a correct total.
+
+   Fixes: `arithmetic` returns `inconclusive` (which blocks — it is a blocking gate with
+   `ON_INCONCLUSIVE=block`) when the total is missing, so **nothing the model omits can produce a
+   pass**; and prompt v3 marks `total_cents` required. `config.PROMPT_VERSION` is bumped to
+   `invoice-extract@v3` — `dlq_replay` re-drives on `prompt_version`, so a silent prompt edit makes
+   old and new extractions indistinguishable.
+
+   Resolved by the same root cause, having looked like a separate undetectable defect: the model
+   read `800.00` as `800` cents rather than `80000`, consistently across line items, subtotal and
+   total, so no gate could catch it. That was also cheap-tier output. Strong tier converts correctly
+   (`4297.00 → 429700`).
+
+   The absorption this bug forced on the canary is **gone** (2026-08-31): `run_canary()` treated
+   `review` as a pass under `EXTRACTION_MODE=real` only because this bug parked the canary there
+   routinely. `review` and `failed` both count as failure in both modes now — with the gate honest,
+   the absorption was blinding the canary to exactly the class of failure it exists to catch.
+
+   **Two lessons worth keeping.** A deterministic check disagreeing with a model is evidence about
+   the model first — this sat open for sessions as "the gate is wrong" while the gate was right. And
+   an `applies_to` predicate is not the only evasion surface: this gate was carefully hardened so a
+   model could not switch it off by omitting `line_items`, and then let one through by omitting the
+   very field being checked.
+
+   **`review` rate is environment-dependent, not a property of the document — established by a
+   failed prediction, 2026-08-31.** `local_scripts/replay_docs.py` builds every document with
+   `canary.synthetic_invoice_pdf_bytes()`, so it is tempting to conclude replayed documents
+   inherently trip this gate. They don't. Under forced-CPU degradation a 13-document replay landed
+   13/13 in `review` (all `review:gates_exhausted`); on a healthy GPU, a 3-document replay landed
+   3/3 in `complete`. Same code, same document generator, opposite outcomes. The review outcomes
+   under CPU were the funnel exhausting tiers/repairs against slow-and-timing-out calls, not the
+   `arithmetic` gate misfiring. **Practical consequence:** a high `review` count after
+   `make replay-docs` means *inference is degraded*, and is worth investigating as a GPU problem
+   (bug #2) rather than dismissed as expected gate noise.
+8. **Fixed 2026-08-30 — `summarize.py` and `wait_for_drain.py` now close their connections.**
+   Both opened a `ledger.connect()` and never closed it, exactly what "Connection-leak discipline"
+   below forbids, and both now run via `kubectl exec` inside long-lived pods where an exception
+   before exit strands an idle-in-transaction connection holding `AccessShareLock` on `documents` —
+   the same class that caused multi-minute `TRUNCATE` hangs once already. Both wrapped in
+   `try/finally`.
+9. **Fixed 2026-08-31 — the mock-OCR registry was unreachable in k8s, so every OCR document
+   extracted from the string `"unregistered page"`.** This was filed as a cosmetic path bug
+   ("`DEFAULT_REGISTRY_PATH` resolves one directory too high; self-consistent, so nothing
+   observably breaks"). The self-consistency argument holds only on the host, where the fixture
+   generator and the OCR workers share a filesystem. **In k8s they are different pods**: a one-shot
+   Job writes the registry into its own container and dies, and `ocr-shard` reads whatever is at
+   that path in *its* container — which is the stale copy baked into the image at build time, whose
+   doc_ids never match the freshly generated fixtures.
+
+   Found by adding `three_page_scan` to the in-cluster fixture set (`FIXTURE_LIMIT=4`) and noticing
+   the outcomes split cleanly by code path: `digital_clean`, the only fixture that never touches
+   OCR, was the only one reaching `complete`; every OCR-dependent document landed in `review` with
+   `gates_exhausted`. Confirmed directly — the assembled text was
+   `'[mock-ocr:crc32c-6fc96:0] unregistered page'`, `ocr_engine.py`'s miss fallback. The gates were
+   doing their job; there was genuinely nothing to extract.
+
+   **Why it stayed invisible:** `review` is a tolerated outcome, `e2e-k8s` asserts only that
+   documents *settled* rather than that they were extracted correctly, and the mechanical half of
+   the OCR path (split, shard, scatter-gather join) worked perfectly the whole time — it was
+   faithfully carrying placeholder text.
+
+   **Fix:** the registry location is now `config.OCR_REGISTRY_URI`, which accepts a `gs://` URI
+   or a local path; `k8s/values.yaml` points it at GCS, which every pod already reaches and which
+   `artifact.py` already uses for page text and shard output. The local default is also corrected to
+   top-level `fixtures/generated/`, so `make reset`'s registry clear stops being a no-op.
+   `DeterministicOcrEngine` caches the registry per instance — `get_engine()` runs once per shard message, so
+   that is one fetch per message rather than per page, and deliberately not process-global, since
+   fixtures can be regenerated under a long-lived consumer and a stale cache there is silently wrong
+   text.
+
+   **Lesson worth keeping:** "self-consistent, so nothing breaks" is a statement about one
+   deployment topology. Any file written by one process and read by another is a shared-storage
+   question the moment those processes stop sharing a filesystem.
+10. **Fixed 2026-08-31, validated live — `wait_for_drain` could declare victory before all
+    documents were ingested.** It counts what is *in the ledger now*, so a document the orphan
+    detector has not yet discovered is invisible to it. The manifest.json target guards this, but
+    **there is never a manifest in k8s** — the fixtures Job writes it into its own container, the
+    same cross-pod trap as bug #9 — so every in-cluster drain fell through to the "total unchanged
+    across two consecutive polls" fallback. At `poll_seconds=2.0` that is a 4s window against a 10s
+    `ORPHAN_DETECTOR_INTERVAL_SECONDS`, so a document could be discovered *after* the check passed.
+    Confirmed live: a replay drain reported `7/7 settled` while an 8th document was still being
+    ingested (it completed a moment later, so the run was fine — the *check* was not).
+
+    The fallback is now a time-based quiet period of two full ingest cycles rather than a count of
+    polls, derived from `ORPHAN_DETECTOR_INTERVAL_SECONDS` so it tracks that value. This matters
+    beyond replay: proving replayed documents reach a terminal state is `verify-loop`'s whole
+    purpose, and it could previously pass without having looked at all of them. Two full
+    `verify-loop` runs have since drained cleanly through the new path (5/5 then 8/8, `failed=0`).
