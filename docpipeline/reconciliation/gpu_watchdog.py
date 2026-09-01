@@ -1,7 +1,7 @@
 """Ollama GPU watchdog — keeps the model pinned in VRAM, and churns the pod
 when it isn't.
 
-See AGENT.md's "Known open bugs" #2. Ollama's GPU failure mode is *silent
+See AGENT.md bug #2. Ollama's GPU failure mode is *silent
 degradation*: `ggml_cuda_init` fails, ollama falls back to CPU, and the pod
 stays `Running`/`Ready` answering every request 3 orders of magnitude slower
 (0.079s -> 150-450s). Nothing in Kubernetes can see that — ollama's own
@@ -239,7 +239,7 @@ def main() -> None:
         raise SystemExit(
             f"ollama is not GPU-resident after {args.timeout}s — models={config.OLLAMA_MODELS}. "
             "Refusing to continue on CPU inference: it is ~3 orders of magnitude slower and "
-            "will trip extraction's liveness probe (see AGENT.md's known open bugs)."
+            "will trip extraction's liveness probe (see AGENT.md's bug register)."
         )
 
 

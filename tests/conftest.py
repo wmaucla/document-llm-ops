@@ -55,7 +55,7 @@ def _clean_ledger_before_session():
     tests, batch-cap tests, ...) sits forever in whatever non-terminal state
     that specific unit test left it in — harmless in isolation, but confirmed
     live to make `summarize.py` (now a real pass/fail gate — see AGENT.md's
-    "Known open bugs") wrongly report a completely unrelated `make e2e-k8s`
+    bug register) wrongly report a completely unrelated `make e2e-k8s`
     or `make summary` run as stuck, when it's actually just this suite's own
     debris from an unrelated earlier `make test`."""
     _truncate_ledger()

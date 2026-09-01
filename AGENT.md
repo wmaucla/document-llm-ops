@@ -6,7 +6,26 @@ mechanics, and open bugs that aren't obvious from reading the code once. For the
 story of how each of these was found and fixed (or not), see [HISTORY.md](HISTORY.md) — this file
 stays current-state only.
 
-## Known open bugs / standing risks
+## Bug register
+
+Mostly closed. The entries stay because the *reasoning* is load-bearing — several
+document why an obvious-looking change would reintroduce the bug, and for #3, #6
+and #9 this file is the only copy (HISTORY.md's narrative doesn't cover them).
+Numbers are referenced from code (`config.py` cites bug #3) and from each other,
+so they are never renumbered; a closed entry keeps its slot.
+
+| # | status | one line |
+|---|---|---|
+| 1 | **open (residual)** | liveness probe killed slow-but-healthy pods. Mechanism closed and reproduction ran clean; whether it was the *original* cause is unproven |
+| 2 | closed | ollama silently fell back to CPU — idle unload re-running `ggml_cuda_init`, plus a 4Gi cgroup starving the loader |
+| 3 | closed | four timeouts sized for the same operation disagreed; now derived from one budget. **Do not split by state** — measured |
+| 4 | closed | outbox relay marked undelivered messages published (`flush()`'s return value discarded) |
+| 5 | closed | attempt-capped documents reached `failed` with an empty `last_error` |
+| 6 | closed | `summary-k8s` failed the play on a healthy in-flight pipeline |
+| 7 | closed | `arithmetic` gate passed on a *missing* total, short-circuiting tier escalation |
+| 8 | closed | `summarize.py`/`wait_for_drain.py` leaked connections |
+| 9 | closed | deterministic-OCR registry unreachable across pods; every OCR doc extracted `"unregistered page"` |
+| 10 | closed | `wait_for_drain` could declare victory before all documents were ingested |
 
 1. **"Wedged" extraction consumer — it was probably never wedged; the liveness probe was killing
    pods that were merely slow. Fixed, and the fix is now supported by a deliberate live
@@ -233,7 +252,7 @@ stays current-state only.
      the attempt budget did not. Now split per stage: `STUCK_THRESHOLD_SECONDS` (30s) still covers
      text production, which is fast in every mode, while `EXTRACT_STUCK_THRESHOLD_SECONDS` covers
      `extract_*` and is budget-derived (1500s) under `EXTRACTION_MODE=real`, falling back to 30s in
-     mock so the host loop and the test suite are unchanged.
+     deterministic mode so the host loop and the test suite are unchanged.
    - `KAFKA_MAX_POLL_INTERVAL_MS` was **900s**, with a comment claiming it "covers two tiers plus
      repair retries at 200 each" — that arithmetic is 1200, so the value was *below* the budget it
      claimed to cover and a worst-case document would have been kicked from the group mid-process.
@@ -321,9 +340,10 @@ stays current-state only.
    total, so no gate could catch it. That was also cheap-tier output. Strong tier converts correctly
    (`4297.00 → 429700`).
 
-   `canary.py`'s `run_canary()` still treats `review` as a pass under `EXTRACTION_MODE=real`. That
-   absorption existed for this bug and is now removable, but only after a few clean runs confirm the
-   canary reaches `complete` unaided.
+   The absorption this bug forced on the canary is **gone** (2026-08-31): `run_canary()` treated
+   `review` as a pass under `EXTRACTION_MODE=real` only because this bug parked the canary there
+   routinely. `review` and `failed` both count as failure in both modes now — with the gate honest,
+   the absorption was blinding the canary to exactly the class of failure it exists to catch.
 
    **Two lessons worth keeping.** A deterministic check disagreeing with a model is evidence about
    the model first — this sat open for sessions as "the gate is wrong" while the gate was right. And
@@ -380,7 +400,7 @@ stays current-state only.
    **Lesson worth keeping:** "self-consistent, so nothing breaks" is a statement about one
    deployment topology. Any file written by one process and read by another is a shared-storage
    question the moment those processes stop sharing a filesystem.
-10. **Fixed 2026-08-31 (not yet validated live) — `wait_for_drain` could declare victory before all
+10. **Fixed 2026-08-31, validated live — `wait_for_drain` could declare victory before all
     documents were ingested.** It counts what is *in the ledger now*, so a document the orphan
     detector has not yet discovered is invisible to it. The manifest.json target guards this, but
     **there is never a manifest in k8s** — the fixtures Job writes it into its own container, the
@@ -393,7 +413,8 @@ stays current-state only.
     The fallback is now a time-based quiet period of two full ingest cycles rather than a count of
     polls, derived from `ORPHAN_DETECTOR_INTERVAL_SECONDS` so it tracks that value. This matters
     beyond replay: proving replayed documents reach a terminal state is `verify-loop`'s whole
-    purpose, and it could previously pass without having looked at all of them.
+    purpose, and it could previously pass without having looked at all of them. Two full
+    `verify-loop` runs have since drained cleanly through the new path (5/5 then 8/8, `failed=0`).
 
 ## What this repo is
 
@@ -446,7 +467,7 @@ stack, not mocks.
   as a trailing suffix (`_1` through `_5` — a leading digit isn't a valid Python identifier, so
   `triage_1.py` not `1_triage.py`; helper modules that aren't independent steps stay unnumbered):
   `triage_1.py` (ingest + classify + dispatch), `pdf_worker_2.py`/`ocr_shard_3.py` (text
-  production), `extraction_4.py` (the funnel: mock/cheap/strong tiers gated at each step),
+  production), `extraction_4.py` (the funnel: deterministic/cheap/strong tiers gated at each step),
   `llm_client.py` (real LLM tier, calls the sibling repo's `litellm` Deployment; also pushes
   gate-outcome Scores to Langfuse — see "Langfuse Score integration" below), `deterministic_extractor.py`
   (default), `sink_stub_5.py`. Every `python -m docpipeline.stages.<name>` invocation
@@ -463,7 +484,7 @@ stack, not mocks.
   `prune.py` (retention for `outbox`/`attempt_log`, the two tables nothing else deletes from),
   `operator.py` (read-only + break-glass lanes — see "The two operator lanes" below),
   `gpu_watchdog.py` (keeps ollama's models pinned in VRAM and restarts the ollama pod when it has
-  silently fallen back to CPU — see "Known open bugs" #2; the only module in this repo that talks
+  silently fallen back to CPU — see bug #2 above; the only module in this repo that talks
   to the Kubernetes API rather than Postgres/Kafka/GCS, hence the only one with a
   `serviceAccountName`).
 - `config.py`, `fixtures/content.py` — stay top-level, not subpackaged: `config.py` is imported by
@@ -491,7 +512,8 @@ stack, not mocks.
   full story and the sync-wave gotcha that came with it.
 - `local_scripts/` — `run_local.py` (host-process orchestrator for `make e2e`, has its own SIGTERM
   handler — see "PID-capture gotcha" below), `wait_for_drain.py`, `create_topics.py`,
-  `summarize.py`.
+  `summarize.py`, `replay_docs.py` (injects N fresh synthetic documents into an already-running
+  cluster — `make replay-docs`/`verify-loop`), and a `README.md` describing each.
 
 ## The state machine and the scatter-gather join
 
@@ -629,8 +651,9 @@ at all — see "Full cluster rebuild" below; it comes from the sibling repo's ow
 
 `config.py`'s `LITELLM_TIER_MODELS = {"cheap": "cheap-fast", "strong": "cheap-balanced"}` and
 `llm_client.py` call the sibling `mlops-llm-repo`'s already-running, already-Langfuse-wired
-`litellm` Deployment, which itself proxies to **Ollama** (`llama3.2:1b` / `qwen2.5:1.5b`, CPU-only,
-$0 marginal cost) — there is no hosted-API call anywhere in this codebase.
+`litellm` Deployment, which itself proxies to **Ollama** (`llama3.2:1b` / `qwen2.5:1.5b`,
+$0 marginal cost) — there is no hosted-API call anywhere in this codebase. Ollama runs
+GPU-resident; it *falls back* to CPU when bug #2 fires, which is a fault, not the design.
 
 Two different defaults, deliberately: `config.py`'s own fallback is `EXTRACTION_MODE=deterministic` (so
 host-only `make e2e` stays a ~15s loop with no minikube needed), but `k8s/values.yaml`'s `config.EXTRACTION_MODE` sets
@@ -652,11 +675,12 @@ queued at `extract_pending` simultaneously, a canary launched mid-batch failed e
 min) SLO. Adding more extraction replicas or raising the SLO further both treat the symptom.
 The actual fix is `fixtures/generate_fixtures.py`'s `FIXTURE_LIMIT` env var — the in-cluster
 fixtures Job (`k8s/templates/jobs.yaml`) sets `FIXTURE_LIMIT=4`, while the plain `fixtures`/`e2e`
-tags still generate the full 14 for `make e2e`'s mock-mode host loop. 4 is the smallest set
+tags still generate the full 14 for `make e2e`'s deterministic-mode host loop. 4 is the smallest set
 covering every distinct path: tier-0, OCR-fallback, single-shard OCR, and multi-shard split+join.
 **The 4th matters and was missing until 2026-08-31** — at `FIXTURE_LIMIT=3` the scatter-gather
-join never ran in the k8s path at all, only in mock host mode, which left the one piece of code
-where bad SQL is a genuine correctness bug unexercised in the real deployment. The canary's own `--slo-seconds` (900, in `site.yml`) is separate margin on top of that fix, not
+join never ran in the k8s path at all, only in deterministic host mode, which left the one
+piece of code where bad SQL is a genuine correctness bug unexercised in the real deployment. The
+canary's own `--slo-seconds` (900, in `site.yml`) is separate margin on top of that fix, not
 the fix itself — if this class of failure resurfaces, check queue depth first
 (`SELECT state, count(*) FROM documents GROUP BY state`) before assuming a bigger number will help;
 a growing queue means contention (fix: `FIXTURE_LIMIT`), a single stuck `extract_pending` document
@@ -847,26 +871,31 @@ exceptions.
 matters — backgrounding a long-lived process — the `.venv/bin/python3` interpreter directly, see
 the PID-capture gotcha above). `.python-version` pins `3.13`.
 
-## Open decision: dropping docker-compose, isolating e2e onto k8s
+## Declined: dropping docker-compose, isolating e2e onto k8s
 
-**Raised 2026-08-30, deliberately deferred — not a bug, a direction.** The intent is that
-`e2e` should live entirely on k8s and `docker-compose.yml` should stop being a dependency of the
-main path (a separate stack for the pytest suite is fine if it needs one). Nothing has been
-changed for this yet; `make test` is explicitly staying as-is for now.
+**Raised 2026-08-30. Revisited 2026-08-31 and consciously declined** — the underlying discomfort
+was "I can't tell prod code from fixtures," not "docker-compose costs too much." That was
+addressed directly instead: fixture generation and its shared content moved to `fixtures/`, and
+the `Mock*` names became `Deterministic*` (see "'Deterministic' backends are production code"),
+which removed the confusion without giving up the 14-fixture host loop. docker-compose stays;
+`make test` stays as-is.
 
-What makes it more than a delete, and what has to be decided first:
+The original direction — `e2e` living entirely on k8s — is still coherent and still undone. What
+would have to be decided first, if anyone picks it up:
 
 - `docker-compose` backs the *whole* host path, not just the test database: `up`, `down`,
   `init-db`, `reset`, `topics`, `fixtures`, `run-local`, `test`, and `make e2e`. Removing it
   removes host-mode `make e2e` entirely.
-- **The coverage question is the real one.** Host `make e2e` runs **all 14 fixtures** in mock mode
-  in ~15s and is what currently "already proves every fixture's correctness" (see the
-  `FIXTURE_LIMIT` discussion under "Ollama is one pod, not N"). `e2e-k8s` runs only **4**, on
+- **The coverage question is the real one.** Host `make e2e` runs **all 14 fixtures**
+  deterministically in ~15s and is what currently "already proves every fixture's
+  correctness" (see the `FIXTURE_LIMIT` discussion under "Ollama is one pod, not N"). `e2e-k8s`
+  runs only **4**, on
   purpose, because 14 documents contending for one Ollama pod is too slow. So deleting host mode
   silently drops a 10-fixture correctness proof unless it is replaced.
-- The obvious replacement is an in-cluster *mock-mode* pass (`EXTRACTION_MODE=deterministic`, all 14
-  fixtures) — it never calls Ollama, so the contention argument doesn't apply and it should stay
-  fast. That keeps the coverage and still makes k8s the only stack. Not implemented; flagged as
+- The obvious replacement is an in-cluster *deterministic-mode* pass
+  (`EXTRACTION_MODE=deterministic`, all 14 fixtures) — it never calls Ollama, so the
+  contention argument doesn't apply and it should stay fast. That keeps the coverage and still
+  makes k8s the only stack. Not implemented; flagged as
   the leading option, not a decision.
 - The pytest suite itself is already hermetic (`conftest.py`'s `_force_mock_extraction_mode`) and
   needs only a Postgres and a fake-GCS. The cluster has both, and `canary`/`summarize`/
@@ -884,5 +913,6 @@ What makes it more than a delete, and what has to be decided first:
   proven only by the test suite and by running the thing live, not by a pipeline gate. A known,
   deliberate gap, not an oversight.
 - Tesseract OCR and the real-LLM tier both stay opt-in behind env vars
-  (`OCR_ENGINE=tesseract`, `EXTRACTION_MODE=real`) rather than becoming the default — mock stays
-  the default for the large majority of tests, which keeps the suite fast and hermetic.
+  (`OCR_ENGINE=tesseract`, `EXTRACTION_MODE=real`) rather than becoming the default — the
+  deterministic backends stay the default for the large majority of tests, which keeps the suite
+  fast and hermetic.

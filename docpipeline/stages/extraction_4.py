@@ -110,8 +110,8 @@ def run_funnel(cur, doc: dict, source_text: str, attempt_no: int) -> tuple[dict 
                 continue
 
             # We just got a response back from the model -- the exact moment
-            # the wedged-consumer bug's evidence goes silent (see AGENT.md's
-            # "Known open bugs" #1). Everything below this line is local/DB
+            # the wedged-consumer bug's evidence goes silent (see AGENT.md
+            # bug #1). Everything below this line is local/DB
             # work with no bounded timeout of its own, so record progress
             # here rather than only at the top of the poll loop.
             heartbeat.touch()

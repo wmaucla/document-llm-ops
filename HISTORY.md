@@ -313,7 +313,7 @@ sweeper's give-up path always produces.
 
 **2026-08-30 — the "wedged extraction consumer" hunt, in full: five hypotheses, four mitigations,
 and a late re-reading of the evidence that inverts the causality.** This is the narrative behind
-AGENT.md's "Known open bugs" #1, moved here so that entry can stay current-state only. Ordered as
+AGENT.md bug #1, moved here so that entry can stay current-state only. Ordered as
 it actually happened.
 
 *Original signature.* A `docpipeline-extraction` replica silently stops consuming after processing

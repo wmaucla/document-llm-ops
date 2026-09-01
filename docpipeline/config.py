@@ -53,7 +53,7 @@ KAFKA_BOOTSTRAP_SERVERS = os.environ.get("KAFKA_BOOTSTRAP_SERVERS", "localhost:9
 # spread the simultaneous JoinGroup a KEDA rollout produces. Off by default:
 # host mode never runs more than one replica per group. k8s/values.yaml sets
 # it in-cluster. (Kept on its merits; it never fixed the bug it was added for
-# -- AGENT.md "Known open bugs" #1.)
+# -- AGENT.md bug #1.)
 KAFKA_JOIN_JITTER_SECONDS = _float("KAFKA_JOIN_JITTER_SECONDS", 0.0)
 # librdkafka group/rebalance logging, opt-in -- too noisy to leave on.
 KAFKA_CONSUMER_DEBUG = os.environ.get("KAFKA_CONSUMER_DEBUG", "") == "1"
@@ -188,7 +188,7 @@ EXTRACT_STUCK_THRESHOLD_SECONDS = _int(
     (EXTRACTION_BUDGET_SECONDS + _BUDGET_MARGIN_SECONDS) if EXTRACTION_MODE == "real" else STUCK_THRESHOLD_SECONDS,
 )
 
-# --- Ollama GPU watchdog (AGENT.md "Known open bugs" #2) ---
+# --- Ollama GPU watchdog (AGENT.md bug #2) ---
 # Ollama falling back to CPU is degradation, not failure: it stays Ready and
 # keeps answering, ~3 orders of magnitude slower (0.079s GPU vs 150-450s CPU).
 # `/api/ps`'s per-model size_vram is the only structured signal that tells the

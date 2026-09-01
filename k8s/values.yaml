@@ -34,7 +34,7 @@ config:
   KAFKA_BOOTSTRAP_SERVERS: "redpanda.default.svc.cluster.local:9092"
   # Off by default in config.py -- only meaningful where a KEDA-scaled
   # Deployment's replicas can restart simultaneously and join the same
-  # consumer group at once (see AGENT.md's "Known open bugs" #1).
+  # consumer group at once (see AGENT.md bug #1).
   KAFKA_JOIN_JITTER_SECONDS: "8"
 
   STORAGE_EMULATOR_HOST: "http://fake-gcs-server.default.svc.cluster.local:4443"
@@ -171,7 +171,7 @@ services:
       limits: {cpu: 100m, memory: 128Mi}
 
   # Keeps ollama's models pinned in VRAM and restarts the ollama pod when it
-  # has silently fallen back to CPU (AGENT.md's "Known open bugs" #2). Lives
+  # has silently fallen back to CPU (AGENT.md bug #2). Lives
   # here, not in the sibling mlops-llm-repo's ollama.yaml, because this repo
   # deliberately doesn't edit that repo's manifests — see the module docstring.
   # The only service with a serviceAccountName (templates/rbac.yaml).
@@ -226,7 +226,7 @@ keda:
     # Restored to 3 on 2026-08-31, lifting the workaround cap of 1 that had
     # stood since 2026-08-30 -- on the strength of a deliberate forced-CPU
     # reproduction under 3 replicas (zero restarts), not a healthy-GPU run,
-    # which cannot exercise the bug at all. See AGENT.md's "Known open bugs" #1.
+    # which cannot exercise the bug at all. See AGENT.md bug #1.
     - name: extraction
       target: docpipeline-extraction
       minReplicaCount: 1

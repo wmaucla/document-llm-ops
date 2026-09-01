@@ -33,7 +33,7 @@ resource here, check its wave against what it actually depends on existing first
 
 **Everything here is one ArgoCD Application** (`../argocd/application.yaml`, `path: k8s`) — no
 raw-kubectl exception for infra, monitoring, or anything else. See
-[AGENT.md](../AGENT.md#handoff-where-this-stands-right-now) for the full story, including why
+[HISTORY.md](../HISTORY.md)'s ArgoCD/Helm migration entry for the full story, including why
 `k8s-infra/` briefly existed as a separate raw-`kubectl apply` directory before being folded back
 into this chart.
 
